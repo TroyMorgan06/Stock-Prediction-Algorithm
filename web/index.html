@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stock AI — picks</title>
+  <style>
+    :root {
+      font-family: system-ui, Segoe UI, sans-serif;
+      background: #0f1419;
+      color: #e6edf3;
+    }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.35rem; font-weight: 600; }
+    .meta { color: #8b949e; font-size: 0.9rem; margin-bottom: 1.25rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.5rem 0.65rem; border-bottom: 1px solid #30363d; }
+    th { color: #8b949e; font-weight: 500; }
+    tr.top td { background: rgba(46, 160, 67, 0.12); }
+    .err { color: #f85149; font-size: 0.85rem; margin-top: 1rem; }
+    .num { font-variant-numeric: tabular-nums; }
+    button {
+      background: #21262d;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 1rem;
+    }
+    button:hover { background: #30363d; }
+  </style>
+</head>
+<body>
+  <h1>Suggested names (by model edge)</h1>
+  <p class="meta" id="updated">Loading…</p>
+  <button type="button" id="refresh">Refresh</button>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Symbol</th>
+        <th>Last close</th>
+        <th>Projected close (1d)</th>
+        <th>P(up)</th>
+        <th>Pred return</th>
+        <th>Edge</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="err" id="errors"></div>
+
+  <script>
+    async function load() {
+      const u = document.getElementById("updated");
+      const tb = document.getElementById("rows");
+      const er = document.getElementById("errors");
+      tb.innerHTML = "";
+      er.textContent = "";
+      try {
+        const r = await fetch("/predictions.json", { cache: "no-store" });
+        if (!r.ok) throw new Error(r.status + " " + r.statusText);
+        const data = await r.json();
+        u.textContent =
+          "Updated (UTC): " +
+          (data.updated_utc || "?") +
+          " · Horizon: " +
+          (data.horizon_days || 1) +
+          " trading day(s)";
+        const stocks = data.stocks || [];
+        stocks.forEach((s, i) => {
+          const tr = document.createElement("tr");
+          if (i === 0) tr.className = "top";
+          tr.innerHTML =
+            "<td>" +
+            (i + 1) +
+            "</td>" +
+            "<td><strong>" +
+            s.ticker +
+            "</strong></td>" +
+            '<td class="num">' +
+            s.last_close.toFixed(2) +
+            "</td>" +
+            '<td class="num">' +
+            s.projected_close.toFixed(2) +
+            "</td>" +
+            '<td class="num">' +
+            s.proba_up.toFixed(3) +
+            "</td>" +
+            '<td class="num">' +
+            (100 * s.pred_return).toFixed(2) +
+            "%</td>" +
+            '<td class="num">' +
+            s.edge.toExponential(2) +
+            "</td>";
+          tb.appendChild(tr);
+        });
+        if ((data.errors || []).length) {
+          er.textContent =
+            "Skipped: " +
+            data.errors.map((e) => e.ticker + " (" + e.error + ")").join("; ");
+        }
+      } catch (e) {
+        u.textContent = "Could not load /predictions.json — is compute_worker running?";
+        er.textContent = String(e);
+      }
+    }
+    document.getElementById("refresh").addEventListener("click", load);
+    load();
+    setInterval(load, 60_000);
+  </script>
+</body>
+</html>

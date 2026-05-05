@@ -21,7 +21,8 @@ import pandas as pd
 import requests
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-from config import NEWS_SENTIMENT_CSV, TICKERS
+from config import INGEST_SLEEP_SEC, NEWS_SENTIMENT_CSV
+from universe import get_universe
 
 nltk.download("vader_lexicon", quiet=True)
 
@@ -83,7 +84,7 @@ def run_batch(tickers: list[str], api_key: str, days_back: int, path: str) -> No
         else:
             print(f"{t}: no headlines / API empty")
         if i < len(tickers) - 1:
-            time.sleep(0.15)
+            time.sleep(INGEST_SLEEP_SEC)
 
 
 def main() -> None:
@@ -98,7 +99,7 @@ def main() -> None:
     if not api_key:
         raise SystemExit("Set FINNHUB_API_KEY in the environment.")
 
-    tickers = TICKERS
+    tickers = get_universe()
 
     if args.daemon:
         while True:

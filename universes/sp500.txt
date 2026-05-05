@@ -1,0 +1,37 @@
+# Start here with a smaller subset; expand as your box/network allows.
+# Put one ticker per line. Lines starting with # are ignored.
+#
+# This file is intentionally short by default to avoid provider blocks.
+# If you want the full S&P 500, paste the list here (or create a new file)
+# and raise MAX_TICKERS in config.py.
+
+AAPL
+MSFT
+GOOGL
+AMZN
+NVDA
+META
+TSLA
+BRK-B
+JPM
+V
+UNH
+JNJ
+WMT
+PG
+MA
+HD
+DIS
+BAC
+XOM
+CVX
+ABBV
+PFE
+KO
+PEP
+COST
+AVGO
+LLY
+MRK
+TMO
+MCD

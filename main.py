@@ -10,7 +10,8 @@ import matplotlib.dates as mdates
 from data import load_data
 from features import build_dataset
 from models import train_models, predict
-from config import HORIZONS, TICKERS, TICKERS_RUN
+from config import HORIZONS
+from universe import get_universe
 
 # Risk / sizing knobs (tune without changing model code)
 MAX_GROSS_LEVERAGE = 0.35
@@ -46,8 +47,10 @@ def position_size(proba_up, pred_ret, vol):
 # WALK-FORWARD (single instrument panel)
 # ----------------------------
 def run_walk_forward(X_df: pd.DataFrame, y_reg: pd.Series, y_cls: pd.Series) -> dict:
-    train_size = int(len(X_df) * 0.6)
-    test_size = int(len(X_df) * 0.2)
+    # Fixed windows (trading days) so every ticker gets folds.
+    # ~3y train, ~1y test (daily bars).
+    train_size = 756
+    test_size = 252
     step = test_size
     gap = max(HORIZONS)
 
@@ -58,6 +61,7 @@ def run_walk_forward(X_df: pd.DataFrame, y_reg: pd.Series, y_cls: pd.Series) -> 
             "final_dates": np.array([], dtype="datetime64[ns]"),
             "final_return": 0.0,
             "folds": 0,
+            "reason": f"need >= {min_need} rows, got {len(X_df)}",
         }
 
     equity_curves = []
@@ -89,25 +93,39 @@ def run_walk_forward(X_df: pd.DataFrame, y_reg: pd.Series, y_cls: pd.Series) -> 
         proba_up = preds["proba"]
         pred_ret = preds["ret"]
 
+        # Guard against NaNs in labels near the end of the sample
+        # (targets can be NaN when future prices don't exist yet).
+        y_test_arr = y_test_reg.to_numpy(dtype=float)
+        mask = np.isfinite(y_test_arr)
+        if not np.any(mask):
+            print(f"  fold start={start}: skipped (all y_test NaN)")
+            continue
+
+        proba_up = np.asarray(proba_up)[mask]
+        pred_ret = np.asarray(pred_ret)[mask]
+        vol_test = np.asarray(vol_test)[mask]
+        y_test_arr = y_test_arr[mask]
+        idx_masked = y_test_reg.index.to_numpy()[mask]
+
         position = position_size(proba_up, pred_ret, vol_test)
         position = (
-            pd.Series(position, index=y_test_reg.index)
+            pd.Series(position, index=idx_masked)
             .ewm(span=POSITION_EWM_SPAN, adjust=False)
             .mean()
             .to_numpy()
         )
 
-        strategy_returns = position * y_test_reg.to_numpy(dtype=float)
+        strategy_returns = position * y_test_arr
         fold_growth = np.cumprod(1.0 + strategy_returns)
         equity_segment = running_equity * fold_growth / fold_growth[0]
         running_equity = float(equity_segment[-1])
         equity_curves.append(equity_segment)
-        equity_dates.append(y_test_reg.index.to_numpy())
+        equity_dates.append(idx_masked)
         folds += 1
 
         print(f"  fold start={start}: seg_return={equity_segment[-1] / equity_segment[0] - 1:.3f}")
 
-        acc = np.mean((proba_up > 0.5) == (y_test_reg > 0))
+        acc = np.mean((proba_up > 0.5) == (y_test_arr > 0))
         print(f"  fold start={start}: accuracy={acc:.3f}")
 
     final_equity = np.concatenate(equity_curves) if equity_curves else np.array([])
@@ -126,7 +144,7 @@ def run_walk_forward(X_df: pd.DataFrame, y_reg: pd.Series, y_cls: pd.Series) -> 
 # MULTI-TICKER RUN
 # ----------------------------
 summary = []
-universe = TICKERS_RUN if TICKERS_RUN is not None else TICKERS
+universe = get_universe()
 
 for ticker in universe:
     print(f"\n=== {ticker} ===")

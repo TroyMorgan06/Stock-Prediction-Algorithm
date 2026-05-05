@@ -1,0 +1,14 @@
+[Unit]
+Description=Stock AI dashboard server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock_ai
+ExecStart=/opt/stock_ai/.venv/bin/python serve_dashboard.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

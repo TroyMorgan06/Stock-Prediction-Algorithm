@@ -1,83 +1,83 @@
 """
-Scan configured subreddits for posts mentioning each ticker; append sentiment rows to CSV.
+Social sentiment by ticker → CSV (no Reddit/Devvit).
 
-Requires: pip install praw nltk pandas
-Environment: REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET
-Optional: REDDIT_USER_AGENT (default below)
+This replaces the old Reddit/PRAW collector with a lightweight provider:
+StockTwits public symbol stream API.
+
+Why: Reddit now pushes many users into Devvit/OAuth flows; PRAW script apps may
+be hard to obtain. StockTwits lets us fetch recent public messages without
+credentials (rate-limited).
+
+Output: keeps the same columns used by the pipeline:
+  - reddit_sentiment_mean
+  - reddit_sentiment_std
+  - reddit_mentions
+
+So you do NOT need to change `features.py` or `data.py`.
+
+Requires: pip install requests nltk pandas
 
 Usage:
   python reddit_ingest.py
-  python reddit_ingest.py --daemon --interval 300
+  python reddit_ingest.py --daemon --interval 900
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import time
 from datetime import datetime, timezone
 
 import nltk
 import pandas as pd
-import praw
+import requests
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-from config import REDDIT_SENTIMENT_CSV, TICKERS
+from config import INGEST_SLEEP_SEC, REDDIT_SENTIMENT_CSV
+from universe import get_universe
 
 nltk.download("vader_lexicon", quiet=True)
 
 sia = SentimentIntensityAnalyzer()
 
-DEFAULT_SUBS = ["stocks", "investing", "wallstreetbets"]
+STOCKTWITS_BASE = "https://api.stocktwits.com/api/2/streams/symbol"
 
 
-def reddit_client() -> praw.Reddit:
-    cid = os.environ.get("REDDIT_CLIENT_ID", "").strip()
-    secret = os.environ.get("REDDIT_CLIENT_SECRET", "").strip()
-    ua = os.environ.get("REDDIT_USER_AGENT", "stock_ai:sentiment:v1 (by /u/local)").strip()
-    if not cid or not secret:
-        raise ValueError("Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in the environment.")
-    return praw.Reddit(client_id=cid, client_secret=secret, user_agent=ua)
+def _stocktwits_symbol(ticker: str) -> str:
+    # StockTwits tends to use '.' for class shares (BRK.B) rather than BRK-B
+    t = ticker.upper().strip()
+    return t.replace("-", ".")
 
 
-def mentions_ticker(text: str, symbol: str) -> bool:
-    u = text.upper()
-    sym = symbol.upper()
-    variants = {sym, sym.replace("-", "."), sym.replace("-", "")}
-    for v in variants:
-        if len(v) < 2:
+def fetch_stocktwits_messages(ticker: str, limit: int = 30) -> list[str]:
+    sym = _stocktwits_symbol(ticker)
+    url = f"{STOCKTWITS_BASE}/{sym}.json"
+    try:
+        res = requests.get(url, timeout=30)
+        if res.status_code != 200:
+            return []
+        data = res.json()
+    except Exception:
+        return []
+
+    msgs = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(msgs, list):
+        return []
+
+    out: list[str] = []
+    for m in msgs[: max(1, int(limit))]:
+        if not isinstance(m, dict):
             continue
-        if re.search(rf"\b{re.escape(v)}\b", u):
-            return True
-    return False
+        body = m.get("body")
+        if body:
+            out.append(str(body))
+    return out
 
 
-def fetch_reddit_posts(
-    reddit: praw.Reddit,
-    symbol: str,
-    subreddits: list[str],
-    limit_per_sub: int,
-) -> list[str]:
-    posts: list[str] = []
-    for sub in subreddits:
-        try:
-            for post in reddit.subreddit(sub).hot(limit=limit_per_sub):
-                text = (post.title or "") + " " + (getattr(post, "selftext", None) or "")
-                if mentions_ticker(text, symbol):
-                    posts.append(text)
-        except Exception:
-            continue
-    return posts
-
-
-def compute_reddit_row(
-    reddit: praw.Reddit,
-    ticker: str,
-    subreddits: list[str],
-    limit_per_sub: int,
-) -> dict | None:
-    posts = fetch_reddit_posts(reddit, ticker, subreddits, limit_per_sub)
+def compute_reddit_row(ticker: str, limit: int) -> dict | None:
+    # Writes into "reddit_*" columns for backwards compatibility.
+    posts = fetch_stocktwits_messages(ticker, limit=limit)
     if not posts:
         return None
     scores = [sia.polarity_scores(p)["compound"] for p in posts]
@@ -86,7 +86,7 @@ def compute_reddit_row(
         "ticker": ticker.upper(),
         "reddit_sentiment_mean": float(sum(scores) / len(scores)),
         "reddit_sentiment_std": float(pd.Series(scores).std()) if len(scores) > 1 else 0.0,
-        "reddit_mentions": len(posts),
+        "reddit_mentions": int(len(posts)),
     }
 
 
@@ -99,45 +99,37 @@ def append_csv(path: str, row: dict) -> None:
 def run_batch(
     tickers: list[str],
     path: str,
-    subreddits: list[str],
+    _unused: list[str],
     limit_per_sub: int,
 ) -> None:
-    reddit = reddit_client()
     for i, t in enumerate(tickers):
-        row = compute_reddit_row(reddit, t, subreddits, limit_per_sub)
+        row = compute_reddit_row(t, limit_per_sub)
         if row:
             append_csv(path, row)
             print(f"{t}: reddit_sentiment_mean={row['reddit_sentiment_mean']:.4f} mentions={row['reddit_mentions']}")
         else:
             print(f"{t}: no matching posts")
         if i < len(tickers) - 1:
-            time.sleep(0.15)
+            time.sleep(INGEST_SLEEP_SEC)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Reddit sentiment by ticker → CSV.")
+    parser = argparse.ArgumentParser(description="Social sentiment by ticker (StockTwits) → CSV.")
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--interval", type=int, default=300)
     parser.add_argument("--output", default=REDDIT_SENTIMENT_CSV)
-    parser.add_argument("--limit-per-sub", type=int, default=50)
-    parser.add_argument(
-        "--subreddits",
-        default=",".join(DEFAULT_SUBS),
-        help="Comma-separated subreddit names.",
-    )
+    parser.add_argument("--limit-per-sub", type=int, default=30, help="Messages per ticker to score.")
     args = parser.parse_args()
-
-    subs = [s.strip() for s in args.subreddits.split(",") if s.strip()]
 
     if args.daemon:
         while True:
             try:
-                run_batch(TICKERS, args.output, subs, args.limit_per_sub)
+                run_batch(get_universe(), args.output, [], args.limit_per_sub)
             except Exception as exc:
                 print("Error:", exc)
             time.sleep(args.interval)
     else:
-        run_batch(TICKERS, args.output, subs, args.limit_per_sub)
+        run_batch(get_universe(), args.output, [], args.limit_per_sub)
 
 
 if __name__ == "__main__":

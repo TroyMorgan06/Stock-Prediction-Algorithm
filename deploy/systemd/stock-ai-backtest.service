@@ -1,0 +1,9 @@
+[Unit]
+Description=Stock AI nightly research backtest (walk-forward)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock_ai
+ExecStart=/opt/stock_ai/.venv/bin/python main.py

@@ -168,11 +168,15 @@ def merge_sentiment_csvs(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         for col in block.columns:
             ser = block[col]
             ser.index = pd.DatetimeIndex(pd.to_datetime(ser.index).normalize())
+            # Forward-fill known sentiment; if the first sentiment point is recent,
+            # earlier history remains NaN and will be default-filled below.
             out[col] = ser.reindex(idx).ffill().values
 
     _inject(_read_daily_sentiment_csv(NEWS_SENTIMENT_CSV, ticker))
     _inject(_read_daily_sentiment_csv(REDDIT_SENTIMENT_CSV, ticker))
 
+    # IMPORTANT: when CSVs exist but only contain recent rows, earlier history is NaN.
+    # Features expect these columns to be numeric and non-null across the full backtest span.
     if "news_sentiment_mean" not in out.columns:
         out["news_sentiment_mean"] = 0.0
     if "news_volume" not in out.columns:
@@ -181,6 +185,11 @@ def merge_sentiment_csvs(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         out["reddit_sentiment_mean"] = 0.0
     if "reddit_mentions" not in out.columns:
         out["reddit_mentions"] = 0.0
+
+    out["news_sentiment_mean"] = pd.to_numeric(out["news_sentiment_mean"], errors="coerce").fillna(0.0)
+    out["news_volume"] = pd.to_numeric(out["news_volume"], errors="coerce").fillna(1.0)
+    out["reddit_sentiment_mean"] = pd.to_numeric(out["reddit_sentiment_mean"], errors="coerce").fillna(0.0)
+    out["reddit_mentions"] = pd.to_numeric(out["reddit_mentions"], errors="coerce").fillna(0.0)
 
     return out
 
@@ -199,14 +208,21 @@ def load_data(ticker: Optional[str] = None, merge_sentiment: bool = True) -> pd.
     else:
         df.columns = [str(c) for c in df.columns]
 
+    eq_idx = df.index
     for name, cross_sym in CROSS_ASSETS.items():
         cross = _fetch_daily(cross_sym, START)
         if isinstance(cross.columns, pd.MultiIndex):
             cross.columns = [c[0] if isinstance(c, tuple) else c for c in cross.columns]
         close_col = "Close" if "Close" in cross.columns else cross.columns[0]
-        df[name] = cross[close_col]
+        ser = cross[close_col].copy()
+        ser.index = pd.DatetimeIndex(ser.index).sort_values()
+        # Align to equity calendar: Yahoo calendars differ (holiday FX vs EQ).
+        # NaN tail rows used to force dropna() to discard fresh equity bars — ffill fixes that.
+        aligned = ser.reindex(eq_idx).ffill().bfill(limit=40)
+        df[name] = aligned.values
 
-    df = df.dropna(how="any")
+    ohlcv = [c for c in ("Open", "High", "Low", "Close", "Volume") if c in df.columns]
+    df = df.dropna(subset=ohlcv, how="any")
 
     if merge_sentiment:
         df = merge_sentiment_csvs(df, sym)

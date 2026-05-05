@@ -106,8 +106,6 @@ def build_dataset(df):
     df = add_sentiment_features(df)
     df = create_targets(df)
 
-    df = df.dropna()
-
     feature_cols = [
         "ret",
         "vol_5", "vol_20", "vol_ratio",
@@ -122,6 +120,11 @@ def build_dataset(df):
 
     # cross asset features
     feature_cols += [f"{c}_ret" for c in CROSS_ASSETS.keys()]
+
+    # Do NOT use df.dropna() on the full frame: target_ret_* are NaN on the
+    # most recent rows (no future prices yet). That was trimming ~1 week of
+    # live bars and made the dashboard look stale vs Yahoo's last session.
+    df = df.dropna(subset=feature_cols)
 
     X = df[feature_cols]
 

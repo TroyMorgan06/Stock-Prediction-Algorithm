@@ -4,9 +4,9 @@ Train XGB on historical rows and predict the latest bar (next-period signal).
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
@@ -14,6 +14,14 @@ from config import HORIZONS
 from data import load_data
 from features import build_dataset
 from models import predict, train_models
+
+
+PRICE_BASIS_SHORT = (
+    "Prices are Yahoo Finance adjusted daily closes (splits/dividends backed out). "
+    "\"Today's close\" appears only when the latest daily bar is dated today's "
+    "calendar date on this machine (session finalized). Ranking uses model edge "
+    "(not shown)."
+)
 
 
 def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
@@ -41,6 +49,12 @@ def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
 
     last_date = X.index[-1]
     last_close = float(raw_close.loc[last_date])
+    prior_close = (
+        float(raw_close.loc[X.index[-2]]) if len(X) >= 2 else None
+    )
+    sess_cal = pd.Timestamp(last_date).date()
+    # When Yahoo's latest daily row is calendar-"today" here, treat as finalized session close.
+    today_close_final = float(last_close) if sess_cal == date.today() else None
 
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
@@ -56,16 +70,24 @@ def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
 
     edge = proba * pred_ret
 
-    return {
+    ts = pd.Timestamp(last_date)
+    last_bar_date = ts.strftime("%Y-%m-%d")
+
+    row: dict[str, Any] = {
         "ticker": ticker.upper(),
         "as_of": str(last_date),
+        "last_bar_date": last_bar_date,
+        "price_basis": PRICE_BASIS_SHORT,
+        "prior_close": prior_close,
+        "projected_close": projected_close,
+        "today_close_final": today_close_final,
         "last_close": last_close,
         "horizon_days": horizon,
         "proba_up": proba,
         "pred_return": pred_ret,
         "edge": edge,
-        "projected_close": projected_close,
     }
+    return row
 
 
 def rank_universe(tickers: list[str], horizon: int = 1) -> list[dict[str, Any]]:

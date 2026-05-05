@@ -1,0 +1,10 @@
+[Unit]
+Description=Stock AI news ingest (Finnhub batch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock_ai
+EnvironmentFile=/opt/stock_ai/.env
+ExecStart=/opt/stock_ai/.venv/bin/python news_ingest.py

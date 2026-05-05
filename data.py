@@ -9,6 +9,9 @@ import yfinance as yf
 
 from config import CROSS_ASSETS, NEWS_SENTIMENT_CSV, REDDIT_SENTIMENT_CSV, START
 
+# Do not pass requests.Session to yfinance >= 0.2.40+ / 1.x: the library uses
+# curl_cffi internally and will error: "requires curl_cffi session not ... Session".
+
 
 def _drop_yf_noise_cols(df: pd.DataFrame) -> pd.DataFrame:
     noise = ("Repaired?", "Dividends", "Stock Splits", "Capital Gains")
@@ -33,15 +36,64 @@ def _strip_tz_index(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _fetch_daily(symbol: str, start: str, retries: int = 3, sleep_s: float = 1.5) -> pd.DataFrame:
+def _flatten_download(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        if symbol in df.columns.get_level_values(0):
+            df = df[symbol]
+        else:
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+    else:
+        df.columns = [str(c) for c in df.columns]
+    return df
+
+
+def _fetch_daily(symbol: str, start: str, retries: int = 4, sleep_s: float = 2.0) -> pd.DataFrame:
     """
-    Yahoo data: prefer Ticker.history() — yf.download() often hits
-    'No timezone found, symbol may be delisted' when Yahoo's tz metadata fails.
+    Yahoo daily bars.
+
+    Prefer ``yf.download(..., ignore_tz=True)`` — avoids both the old
+    "No timezone found" path and many builds that throw **failed to get ticker**
+    when using ``Ticker()`` metadata before ``history()`` runs.
+
+    Falls back to ``period=`` if ``start=`` returns empty; ``Ticker.history`` last.
     """
     symbol = symbol.strip()
     last_err: Optional[Exception] = None
+
+    def run_download(extra: dict) -> pd.DataFrame:
+        kwargs = {
+            "tickers": symbol,
+            "progress": False,
+            "auto_adjust": True,
+            "threads": False,
+            "timeout": 45,
+            **extra,
+        }
+        try:
+            return yf.download(ignore_tz=True, **kwargs)
+        except TypeError:
+            return yf.download(**kwargs)
+
+    variants = (
+        {"start": start},
+        {"period": "10y"},
+        {"period": "max"},
+    )
+
     for attempt in range(retries):
-        # 1) Primary: history (more reliable for tz)
+        for extra in variants:
+            try:
+                df = run_download(extra)
+                df = _flatten_download(df, symbol)
+                df = _strip_tz_index(df)
+                df = _drop_yf_noise_cols(df)
+                if df is not None and not df.empty and "Close" in df.columns:
+                    return df
+            except Exception as e:
+                last_err = e
+
         try:
             t = yf.Ticker(symbol)
             try:
@@ -49,34 +101,19 @@ def _fetch_daily(symbol: str, start: str, retries: int = 3, sleep_s: float = 1.5
                     start=start,
                     auto_adjust=True,
                     actions=False,
+                    timeout=45,
                     repair=True,
                 )
             except TypeError:
-                df = t.history(
-                    start=start,
-                    auto_adjust=True,
-                    actions=False,
-                )
-            df = _strip_tz_index(df)
-            df = _drop_yf_noise_cols(df)
-            if df is not None and not df.empty and "Close" in df.columns:
-                return df
-        except Exception as e:
-            last_err = e
-
-        # 2) Fallback: download
-        try:
-            df = yf.download(
-                symbol,
-                start=start,
-                progress=False,
-                auto_adjust=True,
-                threads=False,
-            )
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-            else:
-                df.columns = [str(c) for c in df.columns]
+                try:
+                    df = t.history(
+                        start=start,
+                        auto_adjust=True,
+                        actions=False,
+                        repair=True,
+                    )
+                except TypeError:
+                    df = t.history(start=start, auto_adjust=True, actions=False)
             df = _strip_tz_index(df)
             df = _drop_yf_noise_cols(df)
             if df is not None and not df.empty and "Close" in df.columns:
@@ -87,7 +124,7 @@ def _fetch_daily(symbol: str, start: str, retries: int = 3, sleep_s: float = 1.5
         if attempt < retries - 1:
             time.sleep(sleep_s * (attempt + 1))
 
-    msg = f"{symbol}: failed after {retries} tries"
+    msg = f"{symbol}: failed after {retries} rounds"
     if last_err:
         msg += f": {last_err}"
     raise RuntimeError(msg)

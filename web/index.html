@@ -43,42 +43,24 @@
   </style>
 </head>
 <body>
-  <h1>Daily plan (simple)</h1>
+  <h1>Top buys</h1>
   <p class="note" id="disc">Loading…</p>
   <p class="meta" id="updated"></p>
   <button type="button" id="refresh">Refresh</button>
-  <h2 style="font-size:1rem;margin:0.75rem 0 0.35rem 0;">Longs (live)</h2>
-  <table style="margin-bottom:1rem;">
+  <table style="margin-top:0.25rem;">
     <thead>
       <tr>
         <th>#</th>
         <th>Symbol</th>
         <th>Session date</th>
-        <th class="num">Prior close</th>
-        <th class="num">Projected close</th>
-        <th class="num">Suggested $</th>
+        <th class="num">Open</th>
+        <th class="num">Close</th>
+        <th class="num">Pred close</th>
         <th class="num">P(up)</th>
         <th class="num">Pred 1d return</th>
       </tr>
     </thead>
-    <tbody id="rows_longs"></tbody>
-  </table>
-
-  <h2 style="font-size:1rem;margin:0.75rem 0 0.35rem 0;">Shorts (paper for now)</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Symbol</th>
-        <th>Session date</th>
-        <th class="num">Prior close</th>
-        <th class="num">Projected close</th>
-        <th class="num">Suggested $</th>
-        <th class="num">P(up)</th>
-        <th class="num">Pred 1d return</th>
-      </tr>
-    </thead>
-    <tbody id="rows_shorts"></tbody>
+    <tbody id="rows_buys"></tbody>
   </table>
   <div class="err" id="errors"></div>
 
@@ -101,11 +83,9 @@
     async function load() {
       var disc = document.getElementById("disc");
       var u = document.getElementById("updated");
-      var tbL = document.getElementById("rows_longs");
-      var tbS = document.getElementById("rows_shorts");
+      var tb = document.getElementById("rows_buys");
       var er = document.getElementById("errors");
-      tbL.textContent = "";
-      tbS.textContent = "";
+      tb.textContent = "";
       er.textContent = "";
 
       var url = location.protocol === "file:"
@@ -117,10 +97,11 @@
         if (!r.ok) throw new Error("HTTP " + r.status);
         var data = JSON.parse(await r.text());
 
-        var plan = (data.trade_plan || {});
-        var f = plan.filters || {};
+        var top = (data.top_buys || {});
+        var f = top.filters || {};
         disc.textContent =
-          "Longs are sized for a tiny live test. Shorts are paper-only unless you have margin + borrow. " +
+          "Shows the top candidates to buy. \"Close\" is the latest completed daily session close and won't reset after midnight. " +
+          "\"Pred close\" is yesterday's projected close for THIS session (when available). " +
           "Filter: P(up) ≥ " + (f.min_p_up ?? "?") + " and Pred 1d return ≥ " + (100*(f.min_pred_1d_return ?? 0)).toFixed(2) + "%.";
 
         u.textContent =
@@ -135,19 +116,17 @@
           tdSym.className = "sym";
           tdSym.textContent = String(s.ticker != null ? s.ticker : "?");
           tr.appendChild(tdSym);
-          tr.appendChild(td("", String(s.last_bar_date || "?")));
-          tr.appendChild(td("num", fmtFixed(s.prior_close, 2)));
-          tr.appendChild(td("num", fmtFixed(s.projected_close, 2)));
-          tr.appendChild(td("num", fmtFixed(s.suggested_dollars, 2)));
-          tr.appendChild(td("num", fmtFixed(s.proba_up, 3)));
-          tr.appendChild(td("num", fmtPct(s.pred_return)));
+          tr.appendChild(td("", String(s.session_date || "?")));
+          tr.appendChild(td("num", fmtFixed(s.session_open, 2)));
+          tr.appendChild(td("num", fmtFixed(s.session_close, 2)));
+          tr.appendChild(td("num", fmtFixed(s.predicted_close, 2)));
+          tr.appendChild(td("num", fmtFixed(s.p_up, 3)));
+          tr.appendChild(td("num", fmtPct(s.pred_1d_return)));
           tb.appendChild(tr);
         }
 
-        var longs = plan.longs || [];
-        var shorts = plan.shorts || [];
-        for (var i = 0; i < longs.length; i++) addRow(tbL, i, longs[i]);
-        for (var i = 0; i < shorts.length; i++) addRow(tbS, i, shorts[i]);
+        var rows = (top.rows || []);
+        for (var i = 0; i < rows.length; i++) addRow(tb, i, rows[i]);
 
         var errs = data.errors || [];
         if (errs.length) {

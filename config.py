@@ -40,7 +40,7 @@ DASHBOARD_PORT = 8765
 COMPUTE_INTERVAL_SEC = 900
 
 # User-friendly live plan defaults (compute_worker.py)
-PLAN_NUM_NAMES = 5               # show top N names
+PLAN_NUM_NAMES = 30              # show top N names
 PLAN_DOLLARS_PER_TRADE = 5.0     # tiny live test (longs)
 PLAN_MIN_PROBA = 0.55            # trade filter
 PLAN_MIN_PRED_RET = 0.003        # 0.30% predicted 1-day return

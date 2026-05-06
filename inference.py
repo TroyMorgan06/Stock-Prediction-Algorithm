@@ -34,6 +34,7 @@ def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
 
     df = load_data(ticker)
     raw_close = df["Close"].copy()
+    raw_open = df["Open"].copy() if "Open" in df.columns else None
 
     X, y_reg, y_cls = build_dataset(df)
     if len(X) < 80:
@@ -49,6 +50,9 @@ def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
 
     last_date = X.index[-1]
     last_close = float(raw_close.loc[last_date])
+    last_open = (
+        float(raw_open.loc[last_date]) if raw_open is not None and last_date in raw_open.index else None
+    )
     prior_close = (
         float(raw_close.loc[X.index[-2]]) if len(X) >= 2 else None
     )
@@ -78,6 +82,7 @@ def train_and_predict_latest(ticker: str, horizon: int = 1) -> dict[str, Any]:
         "as_of": str(last_date),
         "last_bar_date": last_bar_date,
         "price_basis": PRICE_BASIS_SHORT,
+        "session_open": last_open,
         "prior_close": prior_close,
         "projected_close": projected_close,
         "today_close_final": today_close_final,

@@ -22,6 +22,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from config import (
     COMPUTE_INTERVAL_SEC,
@@ -123,15 +124,89 @@ def build_trade_plan(stocks: list[dict]) -> dict:
     }
 
 
+def _read_previous_payload(path: str) -> dict[str, Any] | None:
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def build_top_buys(stocks: list[dict], prev_payload: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Simple UI view:
+      - Always show the latest completed daily session (from Yahoo daily bars).
+      - "Pred close" is the prior payload's projected close for THIS session (best-effort).
+        Concretely: if the previous payload's `last_bar_date` differs from the current
+        `last_bar_date`, its `projected_close` is treated as "yesterday's prediction"
+        for today's session close.
+    """
+    prev_map: dict[str, dict] = {}
+    if prev_payload and isinstance(prev_payload.get("stocks"), list):
+        for r in prev_payload["stocks"]:
+            t = (r or {}).get("ticker")
+            if t:
+                prev_map[str(t).upper()] = r
+
+    qualified = [s for s in stocks if _qualifies(s)]
+    picks = qualified[:PLAN_NUM_NAMES]
+
+    rows: list[dict[str, Any]] = []
+    for rank, s in enumerate(picks, start=1):
+        ticker = str(s.get("ticker", "")).upper()
+        session_date = s.get("last_bar_date")
+        session_close = s.get("last_close")
+
+        predicted_close_for_session = None
+        predicted_from_date = None
+        prev = prev_map.get(ticker)
+        if (
+            prev
+            and prev.get("projected_close") is not None
+            and prev.get("last_bar_date") is not None
+            and prev.get("last_bar_date") != session_date
+        ):
+            predicted_close_for_session = prev.get("projected_close")
+            predicted_from_date = prev.get("last_bar_date")
+
+        row = {
+            "rank": rank,
+            "ticker": ticker,
+            "session_date": session_date,
+            "session_open": s.get("session_open"),
+            "session_close": session_close,
+            "predicted_close": predicted_close_for_session,
+            "predicted_from_date": predicted_from_date,
+            "p_up": s.get("proba_up"),
+            "pred_1d_return": s.get("pred_return"),
+        }
+        rows.append(row)
+
+    return {
+        "count": len(rows),
+        "filters": {
+            "min_p_up": PLAN_MIN_PROBA,
+            "min_pred_1d_return": PLAN_MIN_PRED_RET,
+            "top_n": PLAN_NUM_NAMES,
+        },
+        "rows": rows,
+    }
+
+
 def build_payload(tickers: list[str]) -> dict:
     rows, errors = rank_universe(tickers, horizon=1)
+    prev_payload = _read_previous_payload(os.path.join(OUTPUT_DIR, PREDICTIONS_JSON))
     plan = build_trade_plan(rows)
+    top_buys = build_top_buys(rows, prev_payload)
     return {
         "updated_utc": datetime.now(timezone.utc).isoformat(),
         "horizon_days": 1,
         "about_last_close": PRICE_BASIS_SHORT,
         "top_pick": rows[0]["ticker"] if rows else None,
         "stocks": rows,
+        "top_buys": top_buys,
         "trade_plan": plan,
         "errors": errors,
     }

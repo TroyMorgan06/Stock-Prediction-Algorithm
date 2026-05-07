@@ -68,5 +68,5 @@ journalctl -u stock-ai-trade.service -f
 ### Notes
 - `stock-ai-compute.service` keeps refreshing `out/predictions.json` + `out/trade_plan.csv`
 - `stock-ai-trade.timer` runs the executor once per weekday; it will **skip** if cash is insufficient or positions/orders already exist.
-- The trade unit currently runs **paper trading** (`--paper`). When ready for live, remove `--paper` in `stock-ai-trade.service`.
+- The trade unit currently runs **paper trading** (`--paper`) and is configured to deploy **$1000/day split across 10 buys**. When ready for live, remove `--paper` in `stock-ai-trade.service`.
 

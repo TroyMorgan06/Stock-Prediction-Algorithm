@@ -98,12 +98,54 @@ def iter_targets(rows: Iterable[PlanRow], max_buys: int) -> List[PlanRow]:
     return longs[: max(0, int(max_buys))]
 
 
+def _calc_per_trade(
+    *,
+    cash_available: float,
+    max_buys: int,
+    notional: Optional[float],
+    daily_budget: Optional[float],
+) -> tuple[int, float]:
+    """
+    Returns (n_trades, per_trade_notional) respecting cash constraints.
+    """
+    max_buys = max(0, int(max_buys))
+    if max_buys <= 0:
+        return 0, 0.0
+
+    if daily_budget is not None:
+        budget = float(daily_budget)
+        if budget <= 0:
+            raise SystemExit("--daily-budget must be > 0")
+        budget = min(budget, float(cash_available))
+        per_trade = budget / float(max_buys)
+        if per_trade <= 0:
+            return 0, 0.0
+        max_affordable = int(float(cash_available) // per_trade)
+        n = min(max_buys, max_affordable)
+        return n, float(per_trade)
+
+    if notional is None:
+        raise SystemExit("Either --notional or --daily-budget must be provided")
+    per_trade = float(notional)
+    if per_trade <= 0:
+        raise SystemExit("--notional must be > 0")
+    max_affordable = int(float(cash_available) // per_trade)
+    n = min(max_buys, max_affordable)
+    return n, float(per_trade)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Execute out/trade_plan.csv on Alpaca using bracket orders.")
     p.add_argument("--plan-csv", default=os.path.join("out", "trade_plan.csv"))
     p.add_argument("--paper", action="store_true", help="Use paper trading endpoint.")
     p.add_argument("--max-buys", type=int, default=2, help="Max number of buys to attempt per run.")
     p.add_argument("--notional", type=float, default=5.0, help="Target dollars per buy (fractional via notional).")
+    p.add_argument(
+        "--daily-budget",
+        type=float,
+        default=None,
+        help="Total dollars to deploy per run (split across --max-buys). Overrides --notional.",
+    )
     p.add_argument("--take-profit", type=float, default=0.01, help="Take-profit percent (e.g. 0.01 = +1%).")
     p.add_argument("--stop-loss", type=float, default=0.01, help="Stop-loss percent (e.g. 0.01 = -1%).")
     p.add_argument("--dry-run", action="store_true", help="Print what would be submitted without placing orders.")
@@ -126,9 +168,6 @@ def main() -> None:
 
     acct = trading.get_account()
     cash_avail = _cash_available(acct)
-    per_trade = float(args.notional)
-    if per_trade <= 0:
-        raise SystemExit("--notional must be > 0")
 
     # Skip duplicates: if we already have a position or an open order for the symbol, do nothing.
     existing_positions = {p.symbol.upper() for p in trading.get_all_positions()}
@@ -144,18 +183,33 @@ def main() -> None:
         print("All targets already have positions/orders; nothing to do.")
         return
 
-    max_affordable = int(cash_avail // per_trade)
-    n = min(len(allowed), max_affordable)
+    n_budget, per_trade = _calc_per_trade(
+        cash_available=cash_avail,
+        max_buys=args.max_buys,
+        notional=None if args.daily_budget is not None else float(args.notional),
+        daily_budget=args.daily_budget,
+    )
+    n = min(len(allowed), n_budget)
     if n <= 0:
-        print(f"Insufficient available cash to trade. available=${cash_avail:.2f}, need >= ${per_trade:.2f}")
+        if args.daily_budget is not None:
+            print(f"Insufficient available cash to trade. available=${cash_avail:.2f}")
+        else:
+            print(f"Insufficient available cash to trade. available=${cash_avail:.2f}, need >= ${per_trade:.2f}")
         return
 
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     submit = allowed[:n]
 
-    print(
-        f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) at ~${per_trade:.2f} notional each."
-    )
+    if args.daily_budget is not None:
+        print(
+            f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
+            f"at ~${per_trade:.2f} each (daily_budget=${float(args.daily_budget):.2f}, max_buys={int(args.max_buys)})."
+        )
+    else:
+        print(
+            f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
+            f"at ~${per_trade:.2f} notional each."
+        )
     print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
 
     for r in submit:

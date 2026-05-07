@@ -20,19 +20,3 @@ ReadWritePaths=/opt/stock_ai/out
 
 [Install]
 WantedBy=multi-user.target
-
-[Unit]
-Description=Stock AI compute worker (predictions + trade plan)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/stock_ai
-EnvironmentFile=/opt/stock_ai/.env
-ExecStart=/opt/stock_ai/.venv/bin/python compute_worker.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target

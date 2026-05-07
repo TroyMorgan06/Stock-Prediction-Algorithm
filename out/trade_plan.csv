@@ -1,7 +1,7 @@
 rank,side,ticker,session_date,prior_close,projected_close,p_up,pred_1d_return,suggested_dollars,notes
-1,LONG,MA,2026-05-05,504.74,502.8653,0.662,0.011639,5.0,Long: buy fractional shares OK.
-2,LONG,MRK,2026-05-05,113.11,113.9028,0.6134,0.006653,5.0,Long: buy fractional shares OK.
-3,LONG,BAC,2026-05-05,52.19,53.3332,0.6969,0.004013,5.0,Long: buy fractional shares OK.
-1,SHORT_PAPER,BAC,2026-05-05,52.19,53.3332,0.6969,0.004013,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).
-2,SHORT_PAPER,MRK,2026-05-05,113.11,113.9028,0.6134,0.006653,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).
-3,SHORT_PAPER,MA,2026-05-05,504.74,502.8653,0.662,0.011639,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).
+1,LONG,MA,2026-05-05,504.74,503.5357,0.6484,0.012987,5.0,Long: buy fractional shares OK.
+2,LONG,MRK,2026-05-05,113.11,114.0163,0.5949,0.007657,5.0,Long: buy fractional shares OK.
+3,LONG,BAC,2026-05-05,52.19,53.2975,0.6474,0.003342,5.0,Long: buy fractional shares OK.
+1,SHORT_PAPER,BAC,2026-05-05,52.19,53.2975,0.6474,0.003342,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).
+2,SHORT_PAPER,MRK,2026-05-05,113.11,114.0163,0.5949,0.007657,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).
+3,SHORT_PAPER,MA,2026-05-05,504.74,503.5357,0.6484,0.012987,5.0,Short: paper-trade first (Fidelity usually can't short fractional/$1).

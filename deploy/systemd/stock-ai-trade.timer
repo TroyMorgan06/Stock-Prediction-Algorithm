@@ -1,0 +1,15 @@
+[Unit]
+Description=Run stock_ai Alpaca executor daily (weekdays)
+
+[Timer]
+# Run once per weekday, shortly after US market open.
+# If your server is not set to America/New_York, either:
+#   - change the server timezone, OR
+#   - change OnCalendar to your local time.
+OnCalendar=Mon..Fri 09:35
+Persistent=true
+Unit=stock-ai-trade.service
+
+[Install]
+WantedBy=timers.target
+

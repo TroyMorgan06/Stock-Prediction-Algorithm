@@ -1,0 +1,11 @@
+[Unit]
+Description=stock_ai daily Alpaca executor (bracket orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock_ai
+EnvironmentFile=/etc/stock-ai/stock-ai.env
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper
+

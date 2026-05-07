@@ -1,4 +1,27 @@
 [Unit]
+Description=stock_ai compute worker (predictions + trade plan)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock_ai
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/compute_worker.py --interval 900
+Restart=always
+RestartSec=10
+EnvironmentFile=/etc/stock-ai/stock-ai.env
+
+# Hardening (keep reasonable; ML libs sometimes need temp)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/stock_ai/out
+
+[Install]
+WantedBy=multi-user.target
+
+[Unit]
 Description=Stock AI compute worker (predictions + trade plan)
 After=network-online.target
 Wants=network-online.target

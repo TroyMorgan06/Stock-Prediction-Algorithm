@@ -35,8 +35,8 @@ def _strip_crlf_bom(s: str) -> str:
 
 
 def _parse_env_file(text: str) -> tuple[str, str]:
-    key_id = "PKJJ2WPD7YK2WPJUTZ3OMFKYOR"
-    secret = "4LXYG33xUN4BDzzVyANR5Md8zGAzNMCEWw7P1PRGEBhT"
+    key_id = ""
+    secret = ""
     for raw in _strip_crlf_bom(text).split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):

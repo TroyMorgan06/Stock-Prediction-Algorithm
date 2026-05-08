@@ -28,7 +28,12 @@ from typing import Iterable, List, Optional
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
+from alpaca.trading.requests import (
+    GetOrdersRequest,
+    MarketOrderRequest,
+    StopLossRequest,
+    TakeProfitRequest,
+)
 
 
 @dataclass(frozen=True)
@@ -197,7 +202,7 @@ def main() -> None:
 
     # Skip duplicates: if we already have a position or an open order for the symbol, do nothing.
     existing_positions = {p.symbol.upper() for p in trading.get_all_positions()}
-    open_orders = trading.get_orders(status=QueryOrderStatus.OPEN)
+    open_orders = trading.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
     open_order_symbols = {o.symbol.upper() for o in open_orders if getattr(o, "symbol", None)}
 
     def blocked(sym: str) -> bool:

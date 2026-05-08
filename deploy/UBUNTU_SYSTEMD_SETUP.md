@@ -65,6 +65,35 @@ journalctl -u stock-ai-compute.service -f
 journalctl -u stock-ai-trade.service -f
 ```
 
+### Troubleshooting: `401 Unauthorized` / `APIError`
+
+Alpaca returns **401** when the **Key ID + Secret** do not match the **endpoint** you are calling.
+
+- **`stock-ai-trade.service` uses `--paper`**, so the client talks to **paper-api.alpaca.markets**. You must use **Paper Trading** API keys from the Alpaca dashboard (toggle to Paper, then API Keys). **Live keys will not work** with `--paper`, and **paper keys will not work** if you remove `--paper` for live trading.
+- In `/etc/stock-ai/stock-ai.env`, use exactly:
+
+  ```bash
+  APCA_API_KEY_ID=PKJJ2WPD7YK2WPJUTZ3OMFKYOR
+  APCA_API_SECRET_KEY=4LXYG33xUN4BDzzVyANR5Md8zGAzNMCEWw7P1PRGEBhT
+  ```
+
+  No `export`, no quotes around values, no spaces around `=`. If you paste from the web UI, watch for accidental line breaks.
+- After fixing keys:
+
+  ```bash
+  sudo systemctl daemon-reload
+  sudo systemctl restart stock-ai-trade.service
+  ```
+
+- Quick manual test (same venv as systemd):
+
+  ```bash
+  set -a && source /etc/stock-ai/stock-ai.env && set +a
+  /opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --dry-run
+  ```
+
+  If auth is valid, it should print cash and intended buys instead of 401.
+
 ### Notes
 - `stock-ai-compute.service` keeps refreshing `out/predictions.json` + `out/trade_plan.csv`
 - `stock-ai-trade.timer` runs the executor once per weekday; it will **skip** if cash is insufficient or positions/orders already exist.

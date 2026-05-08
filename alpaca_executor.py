@@ -12,7 +12,7 @@ Setup:
       APCA_API_KEY_ID
       APCA_API_SECRET_KEY
   - Run against paper first:
-      python alpaca_executor.py --paper --once
+      python alpaca_executor.py --paper --dry-run
 
 Note: This is not financial advice. Start with paper trading.
 """
@@ -98,6 +98,28 @@ def iter_targets(rows: Iterable[PlanRow], max_buys: int) -> List[PlanRow]:
     return longs[: max(0, int(max_buys))]
 
 
+def _exit_on_alpaca_auth_failure(exc: BaseException, *, paper: bool) -> None:
+    """Raise SystemExit with actionable hints when Alpaca returns 401."""
+    text = str(exc).lower()
+    code = getattr(exc, "status_code", None)
+    resp = getattr(exc, "response", None)
+    resp_code = getattr(resp, "status_code", None) if resp is not None else None
+    if code != 401 and resp_code != 401 and "401" not in str(exc) and "unauthorized" not in text:
+        return
+    env = "paper (paper-api.alpaca.markets)" if paper else "live (api.alpaca.markets)"
+    raise SystemExit(
+        "Alpaca API rejected your credentials (401 Unauthorized).\n\n"
+        f"You are using the {env} endpoint. Keys must match that environment:\n"
+        "  - In the Alpaca dashboard, open Paper Trading and copy the Paper API Key ID + Secret, OR\n"
+        "    open Live and copy the Live keys — they are not interchangeable.\n"
+        "  - systemd: check /etc/stock-ai/stock-ai.env has APCA_API_KEY_ID and APCA_API_SECRET_KEY\n"
+        "    (no quotes, no spaces around '=', one line per variable).\n"
+        "  - After editing the env file: sudo systemctl daemon-reload && "
+        "sudo systemctl restart stock-ai-trade.service\n\n"
+        f"Original error: {exc}"
+    ) from exc
+
+
 def _calc_per_trade(
     *,
     cash_available: float,
@@ -151,8 +173,8 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true", help="Print what would be submitted without placing orders.")
     args = p.parse_args()
 
-    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY") or ""
-    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET") or ""
+    key = (os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY") or "").strip()
+    secret = (os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET") or "").strip()
     if not key or not secret:
         raise SystemExit(
             "Missing Alpaca credentials. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables."
@@ -166,7 +188,11 @@ def main() -> None:
 
     trading = TradingClient(key, secret, paper=bool(args.paper))
 
-    acct = trading.get_account()
+    try:
+        acct = trading.get_account()
+    except Exception as exc:
+        _exit_on_alpaca_auth_failure(exc, paper=bool(args.paper))
+        raise
     cash_avail = _cash_available(acct)
 
     # Skip duplicates: if we already have a position or an open order for the symbol, do nothing.

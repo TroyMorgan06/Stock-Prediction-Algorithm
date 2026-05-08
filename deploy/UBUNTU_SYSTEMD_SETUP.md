@@ -17,6 +17,21 @@ pip install -r requirements.txt
 
 ### 3) Create the env file (Alpaca keys)
 
+**Option A — script (recommended):** writes `/etc/stock-ai/stock-ai.env` with correct LF endings and verifies paper auth.
+
+```bash
+cd /opt/stock_ai
+sudo /opt/stock_ai/.venv/bin/python deploy/setup_alpaca_env.py
+```
+
+Use the **venv** interpreter so the post-write Alpaca check works (`alpaca-py` is installed there). It will prompt for Key ID and Secret (secret is hidden). Or paste from Alpaca into a file and:
+
+```bash
+sudo /opt/stock_ai/.venv/bin/python deploy/setup_alpaca_env.py --from ./alpaca_paper.env
+```
+
+**Option B — manual:**
+
 ```bash
 sudo mkdir -p /etc/stock-ai
 sudo cp /opt/stock_ai/deploy/systemd/stock-ai.env.example /etc/stock-ai/stock-ai.env

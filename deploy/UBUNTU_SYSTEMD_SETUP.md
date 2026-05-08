@@ -24,6 +24,15 @@ sudo nano /etc/stock-ai/stock-ai.env
 sudo chmod 600 /etc/stock-ai/stock-ai.env
 ```
 
+If bash later says **`'\r': command not found`**, the file was saved with **Windows CRLF** line endings. Fix on the server:
+
+```bash
+sudo apt-get update && sudo apt-get install -y dos2unix
+sudo dos2unix /etc/stock-ai/stock-ai.env
+```
+
+(or `sudo sed -i 's/\r$//' /etc/stock-ai/stock-ai.env`)
+
 ### 4) Install the systemd unit files
 
 ```bash
@@ -85,14 +94,37 @@ Alpaca returns **401** when the **Key ID + Secret** do not match the **endpoint*
   sudo systemctl restart stock-ai-trade.service
   ```
 
-- Quick manual test (same venv as systemd):
+- Quick manual test (same venv as systemd). Prefer the helper script (avoids `sudo` + nested `python -c` quoting issues):
 
   ```bash
-  set -a && source /etc/stock-ai/stock-ai.env && set +a
-  /opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --dry-run
+  sudo cp /opt/stock_ai/deploy/verify_alpaca.py /opt/stock_ai/verify_alpaca.py
+  sudo chmod +x /opt/stock_ai/verify_alpaca.py
+  sudo bash -c 'set -a && source /etc/stock-ai/stock-ai.env && set +a && /opt/stock_ai/.venv/bin/python /opt/stock_ai/verify_alpaca.py'
   ```
 
-  If auth is valid, it should print cash and intended buys instead of 401.
+  You should see `verify_alpaca: starting` immediately, then key lengths, then `OK — account:` or a traceback.
+
+- If **Python prints nothing** (even `print("hello")`):
+
+  - Confirm you are calling the interpreter you think you are:
+
+    ```bash
+    type python3
+    python3 -V
+    /opt/stock_ai/.venv/bin/python -V
+    ```
+
+  - Force unbuffered output:
+
+    ```bash
+    python3 -u -c "print('hello', flush=True)"
+    ```
+
+  - If still silent, write to a file (proves Python ran):
+
+    ```bash
+    python3 -c "open('/tmp/py_ok.txt','w').write('ok\n')" && cat /tmp/py_ok.txt
+    ```
 
 ### Notes
 - `stock-ai-compute.service` keeps refreshing `out/predictions.json` + `out/trade_plan.csv`

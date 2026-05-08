@@ -1,0 +1,7 @@
+# Avoid CRLF in files that bash/systemd parse on Linux
+* text=auto
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+deploy/systemd/*.env.example text eol=lf
+deploy/*.md text eol=lf

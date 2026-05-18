@@ -24,7 +24,7 @@ import csv
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
@@ -96,6 +96,86 @@ def _cash_available(account) -> float:
 def _round_price(x: float) -> float:
     # US equities are usually 2 decimals; keep it simple and stable.
     return round(float(x) + 1e-12, 2)
+
+
+# Alpaca bracket orders validate legs against current market price, not plan prior_close.
+ALPACA_BRACKET_MIN_OFFSET = 0.01
+
+
+def _bracket_prices(
+    base: float,
+    *,
+    take_profit_pct: float,
+    stop_loss_pct: float,
+) -> Optional[Tuple[float, float]]:
+    """
+    Return (take_profit_limit, stop_loss_stop) for a buy bracket.
+
+    Alpaca requires stop_loss.stop_price <= base_price - $0.01 (and TP above base).
+    """
+    if base <= 0:
+        return None
+    tp = _round_price(base * (1.0 + float(take_profit_pct)))
+    sl = _round_price(base * (1.0 - float(stop_loss_pct)))
+    max_sl = _round_price(base - ALPACA_BRACKET_MIN_OFFSET)
+    min_tp = _round_price(base + ALPACA_BRACKET_MIN_OFFSET)
+    if sl > max_sl:
+        sl = max_sl
+    if tp < min_tp:
+        tp = min_tp
+    if sl <= 0 or tp <= 0 or tp <= sl:
+        return None
+    return tp, sl
+
+
+def _fetch_market_prices(key: str, secret: str, symbols: List[str]) -> Dict[str, float]:
+    """Latest trade (then quote mid) per symbol from Alpaca market data."""
+    if not symbols:
+        return {}
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
+    except ImportError:
+        return {}
+
+    client = StockHistoricalDataClient(key, secret)
+    out: Dict[str, float] = {}
+    uniq = sorted({s.upper() for s in symbols if s})
+
+    try:
+        trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=uniq))
+    except Exception:
+        trades = None
+
+    if trades is not None:
+        for sym in uniq:
+            t = trades.get(sym) if hasattr(trades, "get") else None
+            price = _f(getattr(t, "price", None)) if t is not None else None
+            if price and price > 0:
+                out[sym] = price
+
+    missing = [s for s in uniq if s not in out]
+    if not missing:
+        return out
+
+    try:
+        quotes = client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=missing))
+    except Exception:
+        return out
+
+    for sym in missing:
+        q = quotes.get(sym) if hasattr(quotes, "get") else None
+        if q is None:
+            continue
+        bid = _f(getattr(q, "bid_price", None))
+        ask = _f(getattr(q, "ask_price", None))
+        if bid and ask and bid > 0 and ask > 0:
+            out[sym] = (bid + ask) / 2.0
+        elif ask and ask > 0:
+            out[sym] = ask
+        elif bid and bid > 0:
+            out[sym] = bid
+    return out
 
 
 def iter_targets(rows: Iterable[PlanRow], max_buys: int) -> List[PlanRow]:
@@ -243,17 +323,38 @@ def main() -> None:
         )
     print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
 
+    market_prices = _fetch_market_prices(key, secret, [r.ticker for r in submit])
+    if not market_prices:
+        print("WARN: could not load live market prices; falling back to plan prior_close for brackets.")
+
     for r in submit:
-        basis = r.prior_close if r.prior_close and r.prior_close > 0 else None
-        if basis is None:
-            print(f"SKIP {r.ticker}: missing/invalid prior_close to price brackets.")
+        sym = r.ticker.upper()
+        base = market_prices.get(sym)
+        base_src = "market"
+        if base is None or base <= 0:
+            base = r.prior_close if r.prior_close and r.prior_close > 0 else None
+            base_src = "prior_close"
+        if base is None:
+            print(f"SKIP {r.ticker}: no market price and missing/invalid prior_close.")
             continue
 
-        tp = _round_price(basis * (1.0 + float(args.take_profit)))
-        sl = _round_price(basis * (1.0 - float(args.stop_loss)))
-        if sl <= 0 or tp <= 0:
-            print(f"SKIP {r.ticker}: invalid bracket prices tp={tp} sl={sl} (basis={basis}).")
+        brackets = _bracket_prices(
+            float(base),
+            take_profit_pct=float(args.take_profit),
+            stop_loss_pct=float(args.stop_loss),
+        )
+        if brackets is None:
+            print(f"SKIP {r.ticker}: invalid bracket prices (base={base:.2f} from {base_src}).")
             continue
+        tp, sl = brackets
+
+        if r.prior_close and r.prior_close > 0 and base_src == "market":
+            drift = abs(float(base) - float(r.prior_close)) / float(r.prior_close)
+            if drift >= 0.005:
+                print(
+                    f"  {r.ticker}: bracket base ${base:.2f} (live) vs plan prior_close ${r.prior_close:.2f} "
+                    f"({drift * 100:.1f}% drift)"
+                )
 
         client_order_id = f"stock_ai_{now}_{r.ticker}"
         order = MarketOrderRequest(
@@ -267,7 +368,10 @@ def main() -> None:
             client_order_id=client_order_id,
         )
 
-        print(f"BUY {r.ticker} notional=${per_trade:.2f} bracket(tp={tp}, sl={sl}) id={client_order_id}")
+        print(
+            f"BUY {r.ticker} notional=${per_trade:.2f} bracket(tp={tp}, sl={sl}, base={base:.2f}/{base_src}) "
+            f"id={client_order_id}"
+        )
         if args.dry_run:
             continue
 

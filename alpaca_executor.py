@@ -6,6 +6,7 @@ This script is intentionally conservative:
   - will not place new buys if there isn't enough available cash
   - will skip symbols that already have an open position or open order
   - uses BRACKET orders (take profit + stop loss) so exits are automated
+  - bracket entry uses whole-share qty (Alpaca does not allow notional/fractional brackets)
 
 Setup:
   - Set environment variables:
@@ -100,6 +101,13 @@ def _round_price(x: float) -> float:
 
 # Alpaca bracket orders validate legs against current market price, not plan prior_close.
 ALPACA_BRACKET_MIN_OFFSET = 0.01
+
+
+def _qty_for_bracket(*, target_dollars: float, price: float) -> int:
+    """Whole shares only — bracket orders cannot use notional/fractional entry."""
+    if target_dollars <= 0 or price <= 0:
+        return 0
+    return int(float(target_dollars) // float(price))
 
 
 def _bracket_prices(
@@ -246,7 +254,12 @@ def main() -> None:
     p.add_argument("--plan-csv", default=os.path.join("out", "trade_plan.csv"))
     p.add_argument("--paper", action="store_true", help="Use paper trading endpoint.")
     p.add_argument("--max-buys", type=int, default=2, help="Max number of buys to attempt per run.")
-    p.add_argument("--notional", type=float, default=5.0, help="Target dollars per buy (fractional via notional).")
+    p.add_argument(
+        "--notional",
+        type=float,
+        default=5.0,
+        help="Target dollars per buy (converted to whole shares; bracket orders are not fractional).",
+    )
     p.add_argument(
         "--daily-budget",
         type=float,
@@ -319,23 +332,33 @@ def main() -> None:
     else:
         print(
             f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
-            f"at ~${per_trade:.2f} notional each."
+            f"at ~${per_trade:.2f} target each (whole shares)."
         )
     print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
 
     market_prices = _fetch_market_prices(key, secret, [r.ticker for r in submit])
     if not market_prices:
-        print("WARN: could not load live market prices; falling back to plan prior_close for brackets.")
+        print("WARN: could not load live market prices; bracket orders will be skipped.")
 
+    cash_remaining = float(cash_avail)
     for r in submit:
         sym = r.ticker.upper()
         base = market_prices.get(sym)
-        base_src = "market"
         if base is None or base <= 0:
-            base = r.prior_close if r.prior_close and r.prior_close > 0 else None
-            base_src = "prior_close"
-        if base is None:
-            print(f"SKIP {r.ticker}: no market price and missing/invalid prior_close.")
+            print(f"SKIP {r.ticker}: no live market price (required for bracket qty and legs).")
+            continue
+
+        qty = _qty_for_bracket(target_dollars=per_trade, price=float(base))
+        if qty <= 0:
+            print(
+                f"SKIP {r.ticker}: target ${per_trade:.2f} < 1 share at ${base:.2f} "
+                f"(bracket orders need whole-share qty, not notional)."
+            )
+            continue
+
+        est_cost = qty * float(base)
+        if est_cost > cash_remaining:
+            print(f"SKIP {r.ticker}: need ~${est_cost:.2f} for {qty} sh but cash_remaining≈${cash_remaining:.2f}.")
             continue
 
         brackets = _bracket_prices(
@@ -344,11 +367,11 @@ def main() -> None:
             stop_loss_pct=float(args.stop_loss),
         )
         if brackets is None:
-            print(f"SKIP {r.ticker}: invalid bracket prices (base={base:.2f} from {base_src}).")
+            print(f"SKIP {r.ticker}: invalid bracket prices (base=${base:.2f}).")
             continue
         tp, sl = brackets
 
-        if r.prior_close and r.prior_close > 0 and base_src == "market":
+        if r.prior_close and r.prior_close > 0:
             drift = abs(float(base) - float(r.prior_close)) / float(r.prior_close)
             if drift >= 0.005:
                 print(
@@ -359,7 +382,7 @@ def main() -> None:
         client_order_id = f"stock_ai_{now}_{r.ticker}"
         order = MarketOrderRequest(
             symbol=r.ticker,
-            notional=per_trade,
+            qty=qty,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
             order_class=OrderClass.BRACKET,
@@ -369,16 +392,18 @@ def main() -> None:
         )
 
         print(
-            f"BUY {r.ticker} notional=${per_trade:.2f} bracket(tp={tp}, sl={sl}, base={base:.2f}/{base_src}) "
+            f"BUY {r.ticker} qty={qty} (~${est_cost:.2f}) bracket(tp={tp}, sl={sl}, base=${base:.2f}) "
             f"id={client_order_id}"
         )
         if args.dry_run:
+            cash_remaining -= est_cost
             continue
 
         try:
             resp = trading.submit_order(order_data=order)
             oid = getattr(resp, "id", None)
             print(f"  submitted order_id={oid}")
+            cash_remaining -= est_cost
         except Exception as exc:
             print(f"  ERROR submitting {r.ticker}: {exc}")
 

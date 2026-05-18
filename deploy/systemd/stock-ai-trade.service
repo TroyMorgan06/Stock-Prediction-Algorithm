@@ -11,5 +11,5 @@ EnvironmentFile=/etc/stock-ai/stock-ai.env
 #   - deploy up to $1000 per day
 #   - split across 10 bracket buys (~$100 each)
 # Adjust take/stop percents as desired.
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1000 --max-buys 10 --take-profit 0.01 --stop-loss 0.01
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1000 --max-buys 5 --take-profit 0.01 --stop-loss 0.01
 

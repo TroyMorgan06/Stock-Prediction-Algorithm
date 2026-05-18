@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,10 +32,13 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
     GetOrdersRequest,
-    MarketOrderRequest,
+    LimitOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
 )
+
+# Bump when debugging deploy mismatches (printed at startup).
+EXECUTOR_VERSION = "2026-05-18-limit-bracket-v3"
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,13 @@ class PlanRow:
     ticker: str
     prior_close: Optional[float]
     suggested_dollars: float
+
+
+@dataclass(frozen=True)
+class QuoteSnap:
+    ask: Optional[float] = None
+    bid: Optional[float] = None
+    last: Optional[float] = None
 
 
 def _f(x: object) -> Optional[float]:
@@ -95,23 +106,46 @@ def _cash_available(account) -> float:
 
 
 def _round_price(x: float) -> float:
-    # US equities are usually 2 decimals; keep it simple and stable.
     return round(float(x) + 1e-12, 2)
 
 
-# Alpaca bracket orders validate legs against current market price, not plan prior_close.
+def _round_price_up(x: float) -> float:
+    return math.ceil(float(x) * 100 - 1e-9) / 100.0
+
+
+def _round_price_down(x: float) -> float:
+    return math.floor(float(x) * 100 + 1e-9) / 100.0
+
+
+# Alpaca validates bracket legs against entry limit price (limit entry) or live market (market entry).
 ALPACA_BRACKET_MIN_OFFSET = 0.01
 
 
-def _qty_for_bracket(*, target_dollars: float, price: float) -> int:
+def _entry_limit_price(snap: QuoteSnap) -> Optional[float]:
+    """Buy limit at ask (rounded up) so bracket base_price matches our entry limit."""
+    if snap.ask and snap.ask > 0:
+        return _round_price_up(snap.ask)
+    if snap.last and snap.last > 0:
+        return _round_price_up(snap.last)
+    if snap.bid and snap.bid > 0:
+        return _round_price_up(snap.bid)
+    return None
+
+
+def _qty_for_bracket(*, target_dollars: float, price: float, cash_cap: float) -> int:
     """Whole shares only — bracket orders cannot use notional/fractional entry."""
-    if target_dollars <= 0 or price <= 0:
+    if price <= 0 or cash_cap <= 0:
         return 0
-    return int(float(target_dollars) // float(price))
+    qty = int(float(target_dollars) // float(price))
+    if qty >= 1:
+        return qty
+    if cash_cap >= price:
+        return 1
+    return 0
 
 
 def _bracket_prices(
-    base: float,
+    entry: float,
     *,
     take_profit_pct: float,
     stop_loss_pct: float,
@@ -119,25 +153,28 @@ def _bracket_prices(
     """
     Return (take_profit_limit, stop_loss_stop) for a buy bracket.
 
-    Alpaca requires stop_loss.stop_price <= base_price - $0.01 (and TP above base).
+    Legs are priced from entry limit; TP/SL are rounded away from entry to satisfy
+    take_profit >= entry + $0.01 and stop_loss <= entry - $0.01.
     """
-    if base <= 0:
+    if entry <= 0:
         return None
-    tp = _round_price(base * (1.0 + float(take_profit_pct)))
-    sl = _round_price(base * (1.0 - float(stop_loss_pct)))
-    max_sl = _round_price(base - ALPACA_BRACKET_MIN_OFFSET)
-    min_tp = _round_price(base + ALPACA_BRACKET_MIN_OFFSET)
-    if sl > max_sl:
-        sl = max_sl
+    offset = ALPACA_BRACKET_MIN_OFFSET
+    tp = max(entry * (1.0 + float(take_profit_pct)), entry + offset)
+    sl = min(entry * (1.0 - float(stop_loss_pct)), entry - offset)
+    tp = _round_price_up(tp)
+    sl = _round_price_down(sl)
+    min_tp = _round_price_up(entry + offset)
+    max_sl = _round_price_down(entry - offset)
     if tp < min_tp:
         tp = min_tp
-    if sl <= 0 or tp <= 0 or tp <= sl:
+    if sl > max_sl:
+        sl = max_sl
+    if sl <= 0 or tp <= sl:
         return None
     return tp, sl
 
 
-def _fetch_market_prices(key: str, secret: str, symbols: List[str]) -> Dict[str, float]:
-    """Latest trade (then quote mid) per symbol from Alpaca market data."""
+def _fetch_market_quotes(key: str, secret: str, symbols: List[str]) -> Dict[str, QuoteSnap]:
     if not symbols:
         return {}
     try:
@@ -147,42 +184,36 @@ def _fetch_market_prices(key: str, secret: str, symbols: List[str]) -> Dict[str,
         return {}
 
     client = StockHistoricalDataClient(key, secret)
-    out: Dict[str, float] = {}
     uniq = sorted({s.upper() for s in symbols if s})
+    out: Dict[str, QuoteSnap] = {sym: QuoteSnap() for sym in uniq}
+
+    try:
+        quotes = client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=uniq))
+    except Exception:
+        quotes = None
+
+    if quotes is not None:
+        for sym in uniq:
+            q = quotes.get(sym) if hasattr(quotes, "get") else None
+            if q is None:
+                continue
+            out[sym] = QuoteSnap(
+                ask=_f(getattr(q, "ask_price", None)),
+                bid=_f(getattr(q, "bid_price", None)),
+                last=out[sym].last,
+            )
 
     try:
         trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=uniq))
     except Exception:
-        trades = None
+        return out
 
     if trades is not None:
         for sym in uniq:
             t = trades.get(sym) if hasattr(trades, "get") else None
-            price = _f(getattr(t, "price", None)) if t is not None else None
-            if price and price > 0:
-                out[sym] = price
-
-    missing = [s for s in uniq if s not in out]
-    if not missing:
-        return out
-
-    try:
-        quotes = client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=missing))
-    except Exception:
-        return out
-
-    for sym in missing:
-        q = quotes.get(sym) if hasattr(quotes, "get") else None
-        if q is None:
-            continue
-        bid = _f(getattr(q, "bid_price", None))
-        ask = _f(getattr(q, "ask_price", None))
-        if bid and ask and bid > 0 and ask > 0:
-            out[sym] = (bid + ask) / 2.0
-        elif ask and ask > 0:
-            out[sym] = ask
-        elif bid and bid > 0:
-            out[sym] = bid
+            last = _f(getattr(t, "price", None)) if t is not None else None
+            snap = out[sym]
+            out[sym] = QuoteSnap(ask=snap.ask, bid=snap.bid, last=last if last and last > 0 else snap.last)
     return out
 
 
@@ -334,55 +365,55 @@ def main() -> None:
             f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
             f"at ~${per_trade:.2f} target each (whole shares)."
         )
+    print(f"Executor: {EXECUTOR_VERSION}")
     print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
-
-    market_prices = _fetch_market_prices(key, secret, [r.ticker for r in submit])
-    if not market_prices:
-        print("WARN: could not load live market prices; bracket orders will be skipped.")
 
     cash_remaining = float(cash_avail)
     for r in submit:
         sym = r.ticker.upper()
-        base = market_prices.get(sym)
-        if base is None or base <= 0:
-            print(f"SKIP {r.ticker}: no live market price (required for bracket qty and legs).")
+        quotes = _fetch_market_quotes(key, secret, [sym])
+        snap = quotes.get(sym, QuoteSnap())
+        entry = _entry_limit_price(snap)
+        if entry is None or entry <= 0:
+            print(f"SKIP {r.ticker}: no live quote for limit entry and bracket legs.")
             continue
 
-        qty = _qty_for_bracket(target_dollars=per_trade, price=float(base))
+        qty = _qty_for_bracket(target_dollars=per_trade, price=float(entry), cash_cap=cash_remaining)
         if qty <= 0:
             print(
-                f"SKIP {r.ticker}: target ${per_trade:.2f} < 1 share at ${base:.2f} "
-                f"(bracket orders need whole-share qty, not notional)."
+                f"SKIP {r.ticker}: cannot afford 1 share at limit ${entry:.2f} "
+                f"(target ${per_trade:.2f}/slot, cash_remaining ${cash_remaining:.2f})."
             )
             continue
 
-        est_cost = qty * float(base)
+        est_cost = qty * float(entry)
         if est_cost > cash_remaining:
             print(f"SKIP {r.ticker}: need ~${est_cost:.2f} for {qty} sh but cash_remaining≈${cash_remaining:.2f}.")
             continue
 
         brackets = _bracket_prices(
-            float(base),
+            float(entry),
             take_profit_pct=float(args.take_profit),
             stop_loss_pct=float(args.stop_loss),
         )
         if brackets is None:
-            print(f"SKIP {r.ticker}: invalid bracket prices (base=${base:.2f}).")
+            print(f"SKIP {r.ticker}: invalid bracket prices (entry=${entry:.2f}).")
             continue
         tp, sl = brackets
 
         if r.prior_close and r.prior_close > 0:
-            drift = abs(float(base) - float(r.prior_close)) / float(r.prior_close)
+            drift = abs(float(entry) - float(r.prior_close)) / float(r.prior_close)
             if drift >= 0.005:
                 print(
-                    f"  {r.ticker}: bracket base ${base:.2f} (live) vs plan prior_close ${r.prior_close:.2f} "
+                    f"  {r.ticker}: entry ${entry:.2f} vs plan prior_close ${r.prior_close:.2f} "
                     f"({drift * 100:.1f}% drift)"
                 )
 
         client_order_id = f"stock_ai_{now}_{r.ticker}"
-        order = MarketOrderRequest(
+        order = LimitOrderRequest(
             symbol=r.ticker,
-            qty=qty,
+            qty=float(qty),
+            limit_price=float(entry),
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
             order_class=OrderClass.BRACKET,
@@ -392,8 +423,8 @@ def main() -> None:
         )
 
         print(
-            f"BUY {r.ticker} qty={qty} (~${est_cost:.2f}) bracket(tp={tp}, sl={sl}, base=${base:.2f}) "
-            f"id={client_order_id}"
+            f"BUY {r.ticker} qty={qty} limit=${entry:.2f} (~${est_cost:.2f}) "
+            f"bracket(tp={tp}, sl={sl}) id={client_order_id}"
         )
         if args.dry_run:
             cash_remaining -= est_cost

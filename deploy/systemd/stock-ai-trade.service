@@ -9,4 +9,4 @@ WorkingDirectory=/opt/stock_ai
 EnvironmentFile=/etc/stock-ai/stock-ai.env
 # ~$6k paper: deploy up to $600 per timer run across 25 names (~$24/slot, whole shares).
 # Tighter 0.5% brackets rotate faster; sells happen via TP/SL legs (not a separate job).
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1200 --max-buys 25 --take-profit 0.005 --stop-loss 0.005
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1200 --max-buys 25 --take-profit 0.005 --stop-loss 0.005 --clear-stale-orders

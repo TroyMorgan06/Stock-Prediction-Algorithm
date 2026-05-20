@@ -41,9 +41,9 @@ COMPUTE_INTERVAL_SEC = 900
 
 # User-friendly live plan defaults (compute_worker.py)
 PLAN_NUM_NAMES = 30              # long candidates in trade_plan.csv (match executor --max-buys)
-PLAN_DOLLARS_PER_TRADE = 25.0    # display sizing hint; executor flags are authoritative
-PLAN_MIN_PROBA = 0.55            # trade filter
-PLAN_MIN_PRED_RET = 0.003        # 0.30% predicted 1-day return
+PLAN_DOLLARS_PER_TRADE = 48.0    # display hint in CSV; executor uses --daily-budget/--max-buys
+PLAN_MIN_PROBA = 0.52            # trade filter (lower => more names in plan)
+PLAN_MIN_PRED_RET = 0.001        # 0.10% predicted 1-day return
 
 # Collector pacing (avoid provider blocks)
 INGEST_SLEEP_SEC = 0.25

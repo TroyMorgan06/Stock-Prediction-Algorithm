@@ -39,7 +39,7 @@ from alpaca.trading.requests import (
 )
 
 # Bump when debugging deploy mismatches (printed at startup).
-EXECUTOR_VERSION = "2026-05-20-notional-to-qty-v5"
+EXECUTOR_VERSION = "2026-05-20-notional-to-qty-v6"
 
 
 @dataclass(frozen=True)
@@ -233,8 +233,8 @@ def iter_long_candidates(rows: Iterable[PlanRow], pool_size: int) -> List[PlanRo
 
 
 def _slot_budget(row: PlanRow, default_budget: float) -> float:
-    if row.suggested_dollars and row.suggested_dollars > 0:
-        return float(row.suggested_dollars)
+    """Use executor run slot size (--daily-budget / --max-buys), not CSV display hint."""
+    _ = row
     return float(default_budget)
 
 
@@ -269,6 +269,50 @@ def _prepare_bracket_candidates(
         prepared.append(BracketCandidate(row=r, entry=float(entry), qty=qty, est_cost=est_cost, budget=budget))
     prepared.sort(key=lambda c: c.row.rank)
     return prepared, skipped_qty
+
+
+def _log_affordability_detail(
+    *,
+    rows: List[PlanRow],
+    quotes: Dict[str, QuoteSnap],
+    budget: float,
+) -> None:
+    for r in rows:
+        sym = r.ticker.upper()
+        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+        if entry is None or entry <= 0:
+            print(f"  {sym}: no quote")
+            continue
+        qty = _notional_to_qty(budget_dollars=budget, price=float(entry))
+        print(f"  {sym}: budget=${budget:.2f} price=${entry:.2f} -> qty={qty}")
+
+
+def _clear_stale_stock_ai_entries(trading: TradingClient, open_orders: list, position_symbols: set[str]) -> int:
+    """
+    Cancel unfilled stock_ai entry orders that block new buys.
+    Keeps orders for symbols we already hold (bracket TP/SL legs).
+    """
+    cancelled = 0
+    for o in open_orders:
+        sym = (getattr(o, "symbol", None) or "").upper()
+        if not sym or sym in position_symbols:
+            continue
+        cid = (getattr(o, "client_order_id", None) or "").strip()
+        if not cid.startswith("stock_ai_"):
+            continue
+        side = str(getattr(o, "side", "") or "").lower()
+        if side and side != "buy":
+            continue
+        oid = getattr(o, "id", None)
+        if not oid:
+            continue
+        try:
+            trading.cancel_order_by_id(str(oid))
+            print(f"Cancelled stale open entry {sym} (order_id={oid})")
+            cancelled += 1
+        except Exception as exc:
+            print(f"WARN: could not cancel {sym} order_id={oid}: {exc}")
+    return cancelled
 
 
 def _exit_on_alpaca_auth_failure(exc: BaseException, *, paper: bool) -> None:
@@ -354,6 +398,18 @@ def main() -> None:
         default=0,
         help="How many LONG plan rows to scan for affordable whole-share qty (0 = 3x max-buys).",
     )
+    p.add_argument(
+        "--clear-stale-orders",
+        action="store_true",
+        default=True,
+        help="Cancel open stock_ai_* buy orders for symbols we do not hold (default: on).",
+    )
+    p.add_argument(
+        "--no-clear-stale-orders",
+        action="store_false",
+        dest="clear_stale_orders",
+        help="Do not cancel open stock_ai_* entry orders before submitting.",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print what would be submitted without placing orders.")
     args = p.parse_args()
 
@@ -380,10 +436,29 @@ def main() -> None:
         raise
     cash_avail = _cash_available(acct)
 
-    # Skip duplicates: if we already have a position or an open order for the symbol, do nothing.
     existing_positions = {p.symbol.upper() for p in trading.get_all_positions()}
-    open_orders = trading.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
+    open_orders = list(trading.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN)))
     open_order_symbols = {o.symbol.upper() for o in open_orders if getattr(o, "symbol", None)}
+
+    print(
+        f"Plan file: {len(rows)} rows, {len(long_pool)} LONG candidates in pool "
+        f"(pool_size={pool_size})."
+    )
+    blocked_pos = [t.ticker for t in long_pool if t.ticker.upper() in existing_positions]
+    blocked_ord = [t.ticker for t in long_pool if t.ticker.upper() in open_order_symbols]
+    if blocked_pos:
+        print(f"Blocked by open position ({len(blocked_pos)}): {', '.join(blocked_pos[:12])}")
+    if blocked_ord:
+        print(
+            f"Blocked by open order ({len(blocked_ord)}): {', '.join(blocked_ord[:12])}"
+            + (" ..." if len(blocked_ord) > 12 else "")
+        )
+        if not args.dry_run and args.clear_stale_orders:
+            n = _clear_stale_stock_ai_entries(trading, open_orders, existing_positions)
+            if n:
+                open_orders = list(trading.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN)))
+                open_order_symbols = {o.symbol.upper() for o in open_orders if getattr(o, "symbol", None)}
+                print(f"Re-checked open orders after cancelling {n} stale stock_ai entry(s).")
 
     def blocked(sym: str) -> bool:
         s = sym.upper()
@@ -391,8 +466,13 @@ def main() -> None:
 
     allowed = [t for t in long_pool if not blocked(t.ticker)]
     if not allowed:
-        print("All plan candidates already have positions/orders; nothing to do.")
+        print("All plan candidates blocked (positions/open orders). Cancel stale orders in Alpaca or wait.")
         return
+    if len(long_pool) < max(5, int(args.max_buys) // 2):
+        print(
+            "WARN: trade plan has very few LONG rows — check compute_worker / out/trade_plan.csv "
+            "(filters in config.py: PLAN_MIN_PROBA, PLAN_MIN_PRED_RET)."
+        )
 
     n_budget, per_trade = _calc_per_trade(
         cash_available=cash_avail,
@@ -432,6 +512,9 @@ def main() -> None:
         f"Candidate pool: {len(allowed)} symbols scanned, {len(affordable)} affordable "
         f"(qty=floor(budget/price)), {skipped_qty} skipped (no quote / qty=0 / over cash)."
     )
+    if len(affordable) == 0 and allowed:
+        print(f"Affordability detail (slot=${per_trade:.2f}):")
+        _log_affordability_detail(rows=allowed, quotes=quotes, budget=per_trade)
 
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     cash_remaining = float(cash_avail)

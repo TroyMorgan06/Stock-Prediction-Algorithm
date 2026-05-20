@@ -1,5 +1,5 @@
 [Unit]
-Description=stock_ai daily Alpaca executor (bracket orders)
+Description=stock_ai Alpaca executor (bracket orders, intraday timer)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,9 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock_ai
 EnvironmentFile=/etc/stock-ai/stock-ai.env
-# Example sizing for a ~$10k account:
-#   - deploy up to $1000 per day
-#   - split across 10 bracket buys (~$100 each)
-# Adjust take/stop percents as desired.
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1000 --max-buys 5 --take-profit 0.01 --stop-loss 0.01
-
+# ~$6k paper: deploy up to $600 per timer run across 25 names (~$24/slot, whole shares).
+# Tighter 0.5% brackets rotate faster; sells happen via TP/SL legs (not a separate job).
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 600 --max-buys 25 --take-profit 0.005 --stop-loss 0.005

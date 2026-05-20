@@ -38,7 +38,7 @@ from alpaca.trading.requests import (
 )
 
 # Bump when debugging deploy mismatches (printed at startup).
-EXECUTOR_VERSION = "2026-05-18-limit-bracket-v3"
+EXECUTOR_VERSION = "2026-05-18-limit-bracket-v4"
 
 
 @dataclass(frozen=True)

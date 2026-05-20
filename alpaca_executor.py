@@ -6,7 +6,8 @@ This script is intentionally conservative:
   - will not place new buys if there isn't enough available cash
   - will skip symbols that already have an open position or open order
   - uses BRACKET orders (take profit + stop loss) so exits are automated
-  - bracket entry uses whole-share qty (Alpaca does not allow notional/fractional brackets)
+  - bracket entry: qty = floor(dollar_budget / live_price), never notional (Option 1)
+  - scans a pool of plan names and picks affordable whole-share brackets up to --max-buys
 
 Setup:
   - Set environment variables:
@@ -38,7 +39,7 @@ from alpaca.trading.requests import (
 )
 
 # Bump when debugging deploy mismatches (printed at startup).
-EXECUTOR_VERSION = "2026-05-18-limit-bracket-v4"
+EXECUTOR_VERSION = "2026-05-20-notional-to-qty-v5"
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,15 @@ class QuoteSnap:
     ask: Optional[float] = None
     bid: Optional[float] = None
     last: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class BracketCandidate:
+    row: PlanRow
+    entry: float
+    qty: int
+    est_cost: float
+    budget: float
 
 
 def _f(x: object) -> Optional[float]:
@@ -132,16 +142,15 @@ def _entry_limit_price(snap: QuoteSnap) -> Optional[float]:
     return None
 
 
-def _qty_for_bracket(*, target_dollars: float, price: float, cash_cap: float) -> int:
-    """Whole shares only — bracket orders cannot use notional/fractional entry."""
-    if price <= 0 or cash_cap <= 0:
+def _notional_to_qty(*, budget_dollars: float, price: float) -> int:
+    """
+    Option 1: convert a dollar budget to whole shares (Alpaca brackets require integer qty).
+
+    Uses floor(budget / price) — never rounds up, so we do not overspend the slot.
+    """
+    if budget_dollars <= 0 or price <= 0:
         return 0
-    qty = int(float(target_dollars) // float(price))
-    if qty >= 1:
-        return qty
-    if cash_cap >= price:
-        return 1
-    return 0
+    return int(float(budget_dollars) // float(price))
 
 
 def _bracket_prices(
@@ -217,9 +226,49 @@ def _fetch_market_quotes(key: str, secret: str, symbols: List[str]) -> Dict[str,
     return out
 
 
-def iter_targets(rows: Iterable[PlanRow], max_buys: int) -> List[PlanRow]:
+def iter_long_candidates(rows: Iterable[PlanRow], pool_size: int) -> List[PlanRow]:
+    """All LONG plan rows up to pool_size (scan past expensive names for affordable qty)."""
     longs = [r for r in rows if r.side == "LONG"]
-    return longs[: max(0, int(max_buys))]
+    return longs[: max(0, int(pool_size))]
+
+
+def _slot_budget(row: PlanRow, default_budget: float) -> float:
+    if row.suggested_dollars and row.suggested_dollars > 0:
+        return float(row.suggested_dollars)
+    return float(default_budget)
+
+
+def _prepare_bracket_candidates(
+    *,
+    rows: List[PlanRow],
+    quotes: Dict[str, QuoteSnap],
+    default_budget: float,
+    cash_cap: float,
+) -> Tuple[List[BracketCandidate], int]:
+    """
+    Build affordable bracket orders: notional -> floor(qty) at live entry price.
+    Returns (candidates sorted by plan rank, count skipped because qty==0).
+    """
+    prepared: List[BracketCandidate] = []
+    skipped_qty = 0
+    for r in rows:
+        sym = r.ticker.upper()
+        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+        if entry is None or entry <= 0:
+            skipped_qty += 1
+            continue
+        budget = _slot_budget(r, default_budget)
+        qty = _notional_to_qty(budget_dollars=budget, price=float(entry))
+        if qty <= 0:
+            skipped_qty += 1
+            continue
+        est_cost = qty * float(entry)
+        if est_cost > cash_cap:
+            skipped_qty += 1
+            continue
+        prepared.append(BracketCandidate(row=r, entry=float(entry), qty=qty, est_cost=est_cost, budget=budget))
+    prepared.sort(key=lambda c: c.row.rank)
+    return prepared, skipped_qty
 
 
 def _exit_on_alpaca_auth_failure(exc: BaseException, *, paper: bool) -> None:
@@ -299,6 +348,12 @@ def main() -> None:
     )
     p.add_argument("--take-profit", type=float, default=0.01, help="Take-profit percent (e.g. 0.01 = +1%).")
     p.add_argument("--stop-loss", type=float, default=0.01, help="Stop-loss percent (e.g. 0.01 = -1%).")
+    p.add_argument(
+        "--candidate-pool",
+        type=int,
+        default=0,
+        help="How many LONG plan rows to scan for affordable whole-share qty (0 = 3x max-buys).",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print what would be submitted without placing orders.")
     args = p.parse_args()
 
@@ -310,8 +365,9 @@ def main() -> None:
         )
 
     rows = load_plan_rows(args.plan_csv)
-    targets = iter_targets(rows, args.max_buys)
-    if not targets:
+    pool_size = int(args.candidate_pool) if int(args.candidate_pool) > 0 else max(int(args.max_buys) * 3, 30)
+    long_pool = iter_long_candidates(rows, pool_size)
+    if not long_pool:
         print("No LONG targets in plan; nothing to do.")
         return
 
@@ -333,9 +389,9 @@ def main() -> None:
         s = sym.upper()
         return (s in existing_positions) or (s in open_order_symbols)
 
-    allowed = [t for t in targets if not blocked(t.ticker)]
+    allowed = [t for t in long_pool if not blocked(t.ticker)]
     if not allowed:
-        print("All targets already have positions/orders; nothing to do.")
+        print("All plan candidates already have positions/orders; nothing to do.")
         return
 
     n_budget, per_trade = _calc_per_trade(
@@ -344,52 +400,56 @@ def main() -> None:
         notional=None if args.daily_budget is not None else float(args.notional),
         daily_budget=args.daily_budget,
     )
-    n = min(len(allowed), n_budget)
-    if n <= 0:
+    if n_budget <= 0:
         if args.daily_budget is not None:
             print(f"Insufficient available cash to trade. available=${cash_avail:.2f}")
         else:
             print(f"Insufficient available cash to trade. available=${cash_avail:.2f}, need >= ${per_trade:.2f}")
         return
 
-    now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    submit = allowed[:n]
-
+    print(f"Executor: {EXECUTOR_VERSION}")
+    print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
     if args.daily_budget is not None:
         print(
-            f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
-            f"at ~${per_trade:.2f} each (daily_budget=${float(args.daily_budget):.2f}, max_buys={int(args.max_buys)})."
+            f"Account cash_available≈${cash_avail:.2f}. Up to {int(args.max_buys)} bracket buy(s) "
+            f"at ~${per_trade:.2f}/slot (run_budget=${float(args.daily_budget):.2f})."
         )
     else:
         print(
-            f"Account cash_available≈${cash_avail:.2f}. Submitting {len(submit)} bracket buy(s) "
-            f"at ~${per_trade:.2f} target each (whole shares)."
+            f"Account cash_available≈${cash_avail:.2f}. Up to {int(args.max_buys)} bracket buy(s) "
+            f"at ~${per_trade:.2f}/slot."
         )
-    print(f"Executor: {EXECUTOR_VERSION}")
-    print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
 
+    quote_syms = [t.ticker for t in allowed]
+    quotes = _fetch_market_quotes(key, secret, quote_syms)
+    affordable, skipped_qty = _prepare_bracket_candidates(
+        rows=allowed,
+        quotes=quotes,
+        default_budget=per_trade,
+        cash_cap=float(cash_avail),
+    )
+    print(
+        f"Candidate pool: {len(allowed)} symbols scanned, {len(affordable)} affordable "
+        f"(qty=floor(budget/price)), {skipped_qty} skipped (no quote / qty=0 / over cash)."
+    )
+
+    now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     cash_remaining = float(cash_avail)
-    for r in submit:
-        sym = r.ticker.upper()
-        quotes = _fetch_market_quotes(key, secret, [sym])
-        snap = quotes.get(sym, QuoteSnap())
-        entry = _entry_limit_price(snap)
-        if entry is None or entry <= 0:
-            print(f"SKIP {r.ticker}: no live quote for limit entry and bracket legs.")
-            continue
-
-        qty = _qty_for_bracket(target_dollars=per_trade, price=float(entry), cash_cap=cash_remaining)
-        if qty <= 0:
+    submitted = 0
+    for cand in affordable:
+        if submitted >= int(args.max_buys):
+            break
+        if cand.est_cost > cash_remaining:
             print(
-                f"SKIP {r.ticker}: cannot afford 1 share at limit ${entry:.2f} "
-                f"(target ${per_trade:.2f}/slot, cash_remaining ${cash_remaining:.2f})."
+                f"SKIP {cand.row.ticker}: need ${cand.est_cost:.2f} for {cand.qty} sh "
+                f"but cash_remaining≈${cash_remaining:.2f}."
             )
             continue
 
-        est_cost = qty * float(entry)
-        if est_cost > cash_remaining:
-            print(f"SKIP {r.ticker}: need ~${est_cost:.2f} for {qty} sh but cash_remaining≈${cash_remaining:.2f}.")
-            continue
+        r = cand.row
+        entry = cand.entry
+        qty = cand.qty
+        est_cost = cand.est_cost
 
         brackets = _bracket_prices(
             float(entry),
@@ -423,11 +483,12 @@ def main() -> None:
         )
 
         print(
-            f"BUY {r.ticker} qty={qty} limit=${entry:.2f} (~${est_cost:.2f}) "
-            f"bracket(tp={tp}, sl={sl}) id={client_order_id}"
+            f"BUY {r.ticker} qty={qty} limit=${entry:.2f} (~${est_cost:.2f}, "
+            f"budget=${cand.budget:.2f}, floor(budget/price)) bracket(tp={tp}, sl={sl}) id={client_order_id}"
         )
         if args.dry_run:
             cash_remaining -= est_cost
+            submitted += 1
             continue
 
         try:
@@ -435,8 +496,12 @@ def main() -> None:
             oid = getattr(resp, "id", None)
             print(f"  submitted order_id={oid}")
             cash_remaining -= est_cost
+            submitted += 1
         except Exception as exc:
             print(f"  ERROR submitting {r.ticker}: {exc}")
+
+    if submitted == 0:
+        print("No orders submitted this run (raise --daily-budget or --max-buys, or wait for cheaper names).")
 
 
 if __name__ == "__main__":

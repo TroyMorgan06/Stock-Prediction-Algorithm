@@ -88,9 +88,12 @@ If blocked, allow port 8765 in your firewall (`ufw allow 8765/tcp`).
 ### Suggested periodic jobs
 
 - **Compute worker**: continuously refreshes `out/predictions.json` and `out/trade_plan.csv`.
+- **Hybrid morning trade**: once Mon–Fri 09:35 ET (`hybrid_morning.py` → approved basket → Alpaca paper brackets).
 - **News ingest**: every 6 hours (timer) to grow `sentiment_news.csv`.
 - **Social ingest**: every 6 hours (timer) to grow `sentiment_reddit.csv` (StockTwits).
 - **Nightly backtest**: runs `main.py` (research) at 02:30.
+
+See `deploy/PAPER_RESET_CHECKLIST.md` and `deploy/CURSOR_SSH.md`.
 
 ### Other strong suggestions
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=stock_ai Alpaca executor (bracket orders, intraday timer)
+Description=stock_ai hybrid morning paper trade (decide + bracket execute once)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,6 +7,5 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock_ai
 EnvironmentFile=/etc/stock-ai/stock-ai.env
-# ~$6k paper: deploy up to $600 per timer run across 25 names (~$24/slot, whole shares).
-# Tighter 0.5% brackets rotate faster; sells happen via TP/SL legs (not a separate job).
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/alpaca_executor.py --paper --daily-budget 1200 --max-buys 25 --take-profit 0.005 --stop-loss 0.005 --clear-stale-orders
+# ~$6k paper: once at open, ~$2000 / 12 names (~$166/slot), ±1.5% brackets.
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper --daily-budget 2000 --max-buys 12 --take-profit 0.015 --stop-loss 0.015 --clear-stale-orders

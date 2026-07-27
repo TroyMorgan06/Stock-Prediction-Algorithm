@@ -1,8 +1,9 @@
 """
-Execute the generated trade plan on Alpaca.
+Execute the generated trade plan / approved basket on Alpaca.
 
 This script is intentionally conservative:
-  - only executes LONG rows from out/trade_plan.csv
+  - prefers out/approved_basket.csv (hybrid morning) when present, else trade_plan.csv
+  - only executes LONG rows
   - will not place new buys if there isn't enough available cash
   - will skip symbols that already have an open position or open order
   - uses BRACKET orders (take profit + stop loss) so exits are automated
@@ -39,7 +40,7 @@ from alpaca.trading.requests import (
 )
 
 # Bump when debugging deploy mismatches (printed at startup).
-EXECUTOR_VERSION = "2026-05-20-notional-to-qty-v6"
+EXECUTOR_VERSION = "2026-07-27-hybrid-basket-v7"
 
 
 @dataclass(frozen=True)
@@ -83,22 +84,48 @@ def load_plan_rows(path: str) -> List[PlanRow]:
     with open(path, "r", newline="", encoding="utf-8") as f:
         r = csv.DictReader(f)
         out: List[PlanRow] = []
-        for row in r:
-            side = str(row.get("side") or "").strip().upper()
+        for i, row in enumerate(r, start=1):
+            side = str(row.get("side") or "").strip().upper() or "LONG"
             ticker = str(row.get("ticker") or "").strip().upper()
             if not ticker:
                 continue
+            # approved_basket uses budget_dollars; trade_plan uses suggested_dollars
+            budget = _f(row.get("budget_dollars"))
+            if budget is None:
+                budget = _f(row.get("suggested_dollars")) or 0.0
+            rank_raw = row.get("rank")
+            try:
+                rank = int(float(rank_raw)) if rank_raw not in (None, "") else i
+            except Exception:
+                rank = i
             out.append(
                 PlanRow(
-                    rank=int(float(row.get("rank") or 0)),
+                    rank=rank,
                     side=side,
                     ticker=ticker,
                     prior_close=_f(row.get("prior_close")),
-                    suggested_dollars=float(row.get("suggested_dollars") or 0.0),
+                    suggested_dollars=float(budget or 0.0),
                 )
             )
     out.sort(key=lambda x: x.rank)
     return out
+
+
+def resolve_plan_csv(explicit: Optional[str] = None) -> str:
+    """Prefer out/approved_basket.csv when present (hybrid morning path)."""
+    if explicit:
+        return explicit
+    try:
+        from config import APPROVED_BASKET_CSV, OUTPUT_DIR, TRADE_PLAN_CSV
+    except Exception:
+        approved = os.path.join("out", "approved_basket.csv")
+        fallback = os.path.join("out", "trade_plan.csv")
+        return approved if os.path.isfile(approved) else fallback
+    approved = os.path.join(OUTPUT_DIR, APPROVED_BASKET_CSV)
+    fallback = os.path.join(OUTPUT_DIR, TRADE_PLAN_CSV)
+    if os.path.isfile(approved):
+        return approved
+    return fallback
 
 
 def _cash_available(account) -> float:
@@ -233,8 +260,9 @@ def iter_long_candidates(rows: Iterable[PlanRow], pool_size: int) -> List[PlanRo
 
 
 def _slot_budget(row: PlanRow, default_budget: float) -> float:
-    """Use executor run slot size (--daily-budget / --max-buys), not CSV display hint."""
-    _ = row
+    """Prefer per-row budget from approved_basket; else executor slot size."""
+    if row.suggested_dollars and row.suggested_dollars > 0:
+        return float(row.suggested_dollars)
     return float(default_budget)
 
 
@@ -374,8 +402,12 @@ def _calc_per_trade(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Execute out/trade_plan.csv on Alpaca using bracket orders.")
-    p.add_argument("--plan-csv", default=os.path.join("out", "trade_plan.csv"))
+    p = argparse.ArgumentParser(description="Execute approved basket / trade plan on Alpaca using bracket orders.")
+    p.add_argument(
+        "--plan-csv",
+        default=None,
+        help="CSV path (default: out/approved_basket.csv if present, else out/trade_plan.csv).",
+    )
     p.add_argument("--paper", action="store_true", help="Use paper trading endpoint.")
     p.add_argument("--max-buys", type=int, default=2, help="Max number of buys to attempt per run.")
     p.add_argument(
@@ -388,7 +420,7 @@ def main() -> None:
         "--daily-budget",
         type=float,
         default=None,
-        help="Total dollars to deploy per run (split across --max-buys). Overrides --notional.",
+        help="Total dollars to deploy per run (split across --max-buys). Caps total spend.",
     )
     p.add_argument("--take-profit", type=float, default=0.01, help="Take-profit percent (e.g. 0.01 = +1%).")
     p.add_argument("--stop-loss", type=float, default=0.01, help="Stop-loss percent (e.g. 0.01 = -1%).")
@@ -420,7 +452,9 @@ def main() -> None:
             "Missing Alpaca credentials. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables."
         )
 
-    rows = load_plan_rows(args.plan_csv)
+    plan_csv = resolve_plan_csv(args.plan_csv)
+    print(f"Using plan CSV: {plan_csv}")
+    rows = load_plan_rows(plan_csv)
     pool_size = int(args.candidate_pool) if int(args.candidate_pool) > 0 else max(int(args.max_buys) * 3, 30)
     long_pool = iter_long_candidates(rows, pool_size)
     if not long_pool:
@@ -487,12 +521,15 @@ def main() -> None:
             print(f"Insufficient available cash to trade. available=${cash_avail:.2f}, need >= ${per_trade:.2f}")
         return
 
+    run_budget_cap = float(args.daily_budget) if args.daily_budget is not None else float(per_trade) * float(args.max_buys)
+    run_budget_cap = min(run_budget_cap, float(cash_avail))
+
     print(f"Executor: {EXECUTOR_VERSION}")
     print(f"Mode: {'PAPER' if args.paper else 'LIVE'}  Dry-run: {bool(args.dry_run)}")
     if args.daily_budget is not None:
         print(
             f"Account cash_available≈${cash_avail:.2f}. Up to {int(args.max_buys)} bracket buy(s) "
-            f"at ~${per_trade:.2f}/slot (run_budget=${float(args.daily_budget):.2f})."
+            f"at ~${per_trade:.2f}/slot (run_budget_cap=${run_budget_cap:.2f})."
         )
     else:
         print(
@@ -506,7 +543,7 @@ def main() -> None:
         rows=allowed,
         quotes=quotes,
         default_budget=per_trade,
-        cash_cap=float(cash_avail),
+        cash_cap=float(run_budget_cap),
     )
     print(
         f"Candidate pool: {len(allowed)} symbols scanned, {len(affordable)} affordable "
@@ -517,7 +554,7 @@ def main() -> None:
         _log_affordability_detail(rows=allowed, quotes=quotes, budget=per_trade)
 
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    cash_remaining = float(cash_avail)
+    cash_remaining = float(run_budget_cap)
     submitted = 0
     for cand in affordable:
         if submitted >= int(args.max_buys):
@@ -525,7 +562,7 @@ def main() -> None:
         if cand.est_cost > cash_remaining:
             print(
                 f"SKIP {cand.row.ticker}: need ${cand.est_cost:.2f} for {cand.qty} sh "
-                f"but cash_remaining≈${cash_remaining:.2f}."
+                f"but budget_remaining≈${cash_remaining:.2f}."
             )
             continue
 

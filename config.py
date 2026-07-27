@@ -40,10 +40,23 @@ DASHBOARD_PORT = 8765
 COMPUTE_INTERVAL_SEC = 900
 
 # User-friendly live plan defaults (compute_worker.py)
-PLAN_NUM_NAMES = 30              # long candidates in trade_plan.csv (match executor --max-buys)
-PLAN_DOLLARS_PER_TRADE = 48.0    # display hint in CSV; executor uses --daily-budget/--max-buys
+PLAN_NUM_NAMES = 30              # long candidates in trade_plan.csv
+PLAN_DOLLARS_PER_TRADE = 166.0   # display hint; morning job uses MORNING_* / CLI flags
 PLAN_MIN_PROBA = 0.52            # trade filter (lower => more names in plan)
 PLAN_MIN_PRED_RET = 0.001        # 0.10% predicted 1-day return
+
+# Hybrid morning trade (hybrid_decide.py / hybrid_morning.py / systemd)
+APPROVED_BASKET_CSV = "approved_basket.csv"
+MORNING_DAILY_BUDGET = 2000.0    # dollars to deploy once at open
+MORNING_MAX_BUYS = 12            # max names in approved basket
+MORNING_TAKE_PROFIT = 0.015      # +1.5%
+MORNING_STOP_LOSS = 0.015        # -1.5%
+MORNING_CANDIDATE_POOL = 60      # LONG rows scanned before affordability filter
+
+# Optional OpenAI-compatible LLM for hybrid_decide (env overrides these defaults)
+# HYBRID_LLM_API_KEY or OPENAI_API_KEY in /etc/stock-ai/stock-ai.env
+HYBRID_LLM_BASE_URL = "https://api.openai.com/v1"
+HYBRID_LLM_MODEL = "gpt-4o-mini"
 
 # Collector pacing (avoid provider blocks)
 INGEST_SLEEP_SEC = 0.25

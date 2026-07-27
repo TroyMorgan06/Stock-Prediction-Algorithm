@@ -19,6 +19,7 @@ from config import (
     MORNING_CANDIDATE_POOL,
     MORNING_DAILY_BUDGET,
     MORNING_MAX_BUYS,
+    MORNING_MAX_SHARE_PRICE,
     MORNING_STOP_LOSS,
     MORNING_TAKE_PROFIT,
     OUTPUT_DIR,
@@ -34,6 +35,7 @@ def main() -> None:
     p.add_argument("--daily-budget", type=float, default=MORNING_DAILY_BUDGET)
     p.add_argument("--max-buys", type=int, default=MORNING_MAX_BUYS)
     p.add_argument("--candidate-pool", type=int, default=MORNING_CANDIDATE_POOL)
+    p.add_argument("--max-share-price", type=float, default=MORNING_MAX_SHARE_PRICE)
     p.add_argument("--take-profit", type=float, default=MORNING_TAKE_PROFIT)
     p.add_argument("--stop-loss", type=float, default=MORNING_STOP_LOSS)
     p.add_argument(
@@ -67,6 +69,8 @@ def main() -> None:
         str(args.max_buys),
         "--candidate-pool",
         str(args.candidate_pool),
+        "--max-share-price",
+        str(args.max_share_price),
     ]
     if args.paper:
         decide_cmd.append("--paper")

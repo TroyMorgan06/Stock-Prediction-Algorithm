@@ -73,7 +73,7 @@ head -20 out/trade_plan.csv
 ```bash
 sudo bash -c 'set -a && source /etc/stock-ai/stock-ai.env && set +a && \
   /opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper \
-  --daily-budget 2000 --max-buys 12 --take-profit 0.015 --stop-loss 0.015 --dry-run'
+  --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --dry-run'
 ```
 
 Confirm: several affordable names, `approved_basket.csv` written, no flood of `qty=0` skips.

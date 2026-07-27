@@ -104,7 +104,7 @@ fi
 echo "--- hybrid morning dry-run ---"
 sudo bash -c "set -a && source '$ENV_FILE' && set +a && \
   '$REPO_ROOT/.venv/bin/python' '$REPO_ROOT/hybrid_morning.py' --paper \
-  --daily-budget 2000 --max-buys 12 --take-profit 0.015 --stop-loss 0.015 --dry-run"
+  --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --dry-run"
 
 echo "--- approved_basket head ---"
 head -30 "$REPO_ROOT/out/approved_basket.csv" 2>/dev/null || echo "(no approved_basket.csv)"

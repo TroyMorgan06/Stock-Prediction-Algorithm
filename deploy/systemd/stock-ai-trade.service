@@ -7,5 +7,5 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock_ai
 EnvironmentFile=/etc/stock-ai/stock-ai.env
-# ~$6k paper: once at open, ~$2000 / 12 names (~$166/slot), ±1.5% brackets.
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper --daily-budget 2000 --max-buys 12 --take-profit 0.015 --stop-loss 0.015 --clear-stale-orders
+# ~$6k paper: once at open, ~$4000 / 20 names (~$200/slot + 1-share fills up to $350), ±1.5% brackets.
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --clear-stale-orders

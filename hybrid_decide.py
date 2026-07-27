@@ -39,6 +39,7 @@ from config import (
     MORNING_CANDIDATE_POOL,
     MORNING_DAILY_BUDGET,
     MORNING_MAX_BUYS,
+    MORNING_MAX_SHARE_PRICE,
     OUTPUT_DIR,
     TRADE_PLAN_CSV,
 )
@@ -101,24 +102,32 @@ def build_affordable(
     cash_cap: float,
     blocked: Set[str],
     max_buys: int,
+    max_share_price: float,
 ) -> List[AffordableName]:
+    """
+    Pass 1: equal slot sizing (qty = floor(slot/price)).
+    Pass 2: fill leftover slots with 1-share buys up to max_share_price.
+    """
     out: List[AffordableName] = []
+    used: Set[str] = set()
     cash_left = float(cash_cap)
-    for r in plan_rows:
-        if len(out) >= max_buys:
-            break
+
+    def try_add(r: PlanRow, budget: float) -> bool:
+        nonlocal cash_left
+        if len(out) >= max_buys or cash_left <= 0:
+            return False
         sym = r.ticker.upper()
-        if sym in blocked:
-            continue
+        if sym in blocked or sym in used:
+            return False
         entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
         if entry is None or entry <= 0:
-            continue
-        qty = _notional_to_qty(budget_dollars=slot_budget, price=float(entry))
+            return False
+        qty = _notional_to_qty(budget_dollars=budget, price=float(entry))
         if qty <= 0:
-            continue
+            return False
         est = qty * float(entry)
         if est > cash_left:
-            continue
+            return False
         out.append(
             AffordableName(
                 ticker=sym,
@@ -126,11 +135,38 @@ def build_affordable(
                 entry=float(entry),
                 qty=qty,
                 est_cost=est,
-                budget=float(slot_budget),
+                budget=float(budget),
                 prior_close=r.prior_close,
             )
         )
+        used.add(sym)
         cash_left -= est
+        return True
+
+    # Pass 1 — equal dollar slots
+    for r in plan_rows:
+        if len(out) >= max_buys:
+            break
+        try_add(r, float(slot_budget))
+
+    # Pass 2 — 1-share fillers for names priced between slot and max_share_price
+    if len(out) < max_buys:
+        for r in plan_rows:
+            if len(out) >= max_buys:
+                break
+            sym = r.ticker.upper()
+            if sym in blocked or sym in used:
+                continue
+            entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+            if entry is None or entry <= 0:
+                continue
+            if float(entry) > float(max_share_price):
+                continue
+            if float(entry) > cash_left:
+                continue
+            # Budget exactly one share at limit price
+            try_add(r, float(entry))
+
     return out
 
 
@@ -230,6 +266,7 @@ def decide(
     daily_budget: float,
     max_buys: int,
     candidate_pool: int,
+    max_share_price: float = MORNING_MAX_SHARE_PRICE,
     dry_run: bool = False,
 ) -> List[dict]:
     key = (os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY") or "").strip()
@@ -262,8 +299,8 @@ def decide(
 
     print(
         f"hybrid_decide: cash≈${cash:.2f} run_budget=${run_budget:.2f} "
-        f"slot≈${slot:.2f} max_buys={max_buys} plan_longs={len(longs)} "
-        f"blocked={len(blocked)} llm={'yes' if _llm_api_key() else 'no'}"
+        f"slot≈${slot:.2f} max_buys={max_buys} max_share=${max_share_price:.0f} "
+        f"plan_longs={len(longs)} blocked={len(blocked)} llm={'yes' if _llm_api_key() else 'no'}"
     )
 
     quotes = _fetch_market_quotes(key, secret, [r.ticker for r in longs])
@@ -274,11 +311,12 @@ def decide(
         cash_cap=run_budget,
         blocked=blocked,
         max_buys=max(max_buys * 3, max_buys),  # over-fetch for LLM to choose from
+        max_share_price=float(max_share_price),
     )
     print(f"hybrid_decide: {len(affordable)} affordable whole-share candidates after filters.")
     if not affordable:
         raise SystemExit(
-            "Zero affordable names (raise --daily-budget, lower --max-buys, or refresh trade plan)."
+            "Zero affordable names (raise --daily-budget / MORNING_MAX_SHARE_PRICE, or refresh trade plan)."
         )
 
     llm_order = llm_pick(
@@ -326,6 +364,7 @@ def main() -> None:
     p.add_argument("--daily-budget", type=float, default=MORNING_DAILY_BUDGET)
     p.add_argument("--max-buys", type=int, default=MORNING_MAX_BUYS)
     p.add_argument("--candidate-pool", type=int, default=MORNING_CANDIDATE_POOL)
+    p.add_argument("--max-share-price", type=float, default=MORNING_MAX_SHARE_PRICE)
     p.add_argument("--dry-run", action="store_true", help="Still write basket; label as dry-run in logs.")
     args = p.parse_args()
 
@@ -336,6 +375,7 @@ def main() -> None:
         daily_budget=float(args.daily_budget),
         max_buys=int(args.max_buys),
         candidate_pool=int(args.candidate_pool),
+        max_share_price=float(args.max_share_price),
         dry_run=bool(args.dry_run),
     )
 

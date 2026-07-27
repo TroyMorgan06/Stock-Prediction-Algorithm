@@ -92,12 +92,9 @@ print('data_ok')
 
 if [[ "$DO_COMPUTE" -eq 1 ]]; then
   echo "--- compute_worker --once (may take a few minutes) ---"
-  # Source Alpaca env so Yahoo→Alpaca bar fallback works under systemd-less CLI runs
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-  "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/compute_worker.py" --once
+  # Env file is chmod 600 root-only; run under sudo so Alpaca fallback keys load.
+  sudo bash -c "set -a && source '$ENV_FILE' && set +a && \
+    cd '$REPO_ROOT' && '$REPO_ROOT/.venv/bin/python' '$REPO_ROOT/compute_worker.py' --once"
   echo "--- trade_plan head ---"
   head -20 "$REPO_ROOT/out/trade_plan.csv" 2>/dev/null || echo "(no trade_plan.csv yet)"
 else

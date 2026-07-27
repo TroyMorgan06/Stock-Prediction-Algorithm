@@ -55,6 +55,7 @@ fi
 echo "--- pip install ---"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/.venv/bin/activate"
+pip install -q -U 'yfinance>=0.2.54' 'curl_cffi>=0.7.0'
 pip install -q -r requirements.txt
 
 echo "--- install systemd units ---"
@@ -79,8 +80,23 @@ fi
 echo "--- verify Alpaca paper account ---"
 sudo bash -c "set -a && source '$ENV_FILE' && set +a && '$REPO_ROOT/.venv/bin/python' '$REPO_ROOT/deploy/verify_alpaca.py'"
 
+echo "--- yahoo/alpaca data smoke test ---"
+sudo bash -c "set -a && source '$ENV_FILE' && set +a && cd '$REPO_ROOT' && \
+  '$REPO_ROOT/.venv/bin/python' -c \"
+from data import _fetch_daily
+df = _fetch_daily('AAPL', '2024-01-01')
+print('AAPL rows', len(df), 'cols', list(df.columns)[:6])
+assert not df.empty and 'Close' in df.columns
+print('data_ok')
+\""
+
 if [[ "$DO_COMPUTE" -eq 1 ]]; then
   echo "--- compute_worker --once (may take a few minutes) ---"
+  # Source Alpaca env so Yahoo→Alpaca bar fallback works under systemd-less CLI runs
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
   "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/compute_worker.py" --once
   echo "--- trade_plan head ---"
   head -20 "$REPO_ROOT/out/trade_plan.csv" 2>/dev/null || echo "(no trade_plan.csv yet)"

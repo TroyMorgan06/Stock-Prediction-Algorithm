@@ -1,5 +1,5 @@
 [Unit]
-Description=stock_ai hybrid morning paper trade (decide + bracket execute once)
+Description=stock_ai Swing Growth morning paper trade (decide + brackets once)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,5 +7,5 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock_ai
 EnvironmentFile=/etc/stock-ai/stock-ai.env
-# ~$6k paper: once at open, ~$4000 / 20 names (~$200/slot + 1-share fills up to $350), ±1.5% brackets.
-ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --clear-stale-orders
+# Swing Growth: up to 8 names, ~70% equity deploy, TP +5% / SL -2.5%, SPY uptrend filter.
+ExecStart=/opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper --daily-budget 7000 --max-buys 8 --take-profit 0.05 --stop-loss 0.025 --clear-stale-orders

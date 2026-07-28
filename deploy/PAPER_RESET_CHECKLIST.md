@@ -6,6 +6,8 @@
 cd /opt/stock_ai && git pull && bash deploy/update_and_deploy.sh
 ```
 
+Read the strategy first: [STRATEGY.md](STRATEGY.md) (Swing Growth: fewer names, wider exits, SPY filter).
+
 Options:
 
 ```bash
@@ -73,7 +75,7 @@ head -20 out/trade_plan.csv
 ```bash
 sudo bash -c 'set -a && source /etc/stock-ai/stock-ai.env && set +a && \
   /opt/stock_ai/.venv/bin/python /opt/stock_ai/hybrid_morning.py --paper \
-  --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --dry-run'
+  --daily-budget 7000 --max-buys 8 --take-profit 0.05 --stop-loss 0.025 --dry-run'
 ```
 
 Confirm: several affordable names, `approved_basket.csv` written, no flood of `qty=0` skips.

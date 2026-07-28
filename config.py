@@ -40,20 +40,31 @@ DASHBOARD_PORT = 8765
 COMPUTE_INTERVAL_SEC = 900
 
 # User-friendly live plan defaults (compute_worker.py)
-PLAN_NUM_NAMES = 50              # long candidates in trade_plan.csv
-PLAN_DOLLARS_PER_TRADE = 200.0   # display hint; morning job uses MORNING_* / CLI flags
-PLAN_MIN_PROBA = 0.50            # trade filter (lower => more names in plan)
-PLAN_MIN_PRED_RET = 0.0005       # 0.05% predicted 1-day return
+PLAN_NUM_NAMES = 40              # candidates in trade_plan.csv (decide picks top affordable)
+PLAN_DOLLARS_PER_TRADE = 800.0   # display hint only
+PLAN_MIN_PROBA = 0.55            # higher quality longs
+PLAN_MIN_PRED_RET = 0.002        # 0.20% predicted return filter
 
-# Hybrid morning trade (hybrid_decide.py / hybrid_morning.py / systemd)
+# Hybrid morning — Swing Growth (see deploy/STRATEGY.md)
 APPROVED_BASKET_CSV = "approved_basket.csv"
-MORNING_DAILY_BUDGET = 4000.0    # dollars to deploy once at open (~2/3 of a $6k paper acct)
-MORNING_MAX_BUYS = 20            # max names in approved basket
-MORNING_TAKE_PROFIT = 0.015      # +1.5%
-MORNING_STOP_LOSS = 0.015        # -1.5%
-MORNING_CANDIDATE_POOL = 100     # LONG rows scanned before affordability filter
-# Allow 1-share fills for names above the equal slot (still whole shares only).
-MORNING_MAX_SHARE_PRICE = 350.0
+# Deploy up to this fraction of account equity when regime is ON.
+MORNING_DEPLOY_FRACTION = 0.70
+# Hard cap on dollars (safety); equity*fraction is used when smaller.
+MORNING_DAILY_BUDGET = 7000.0
+MORNING_MAX_BUYS = 8             # fewer, higher-conviction names
+MORNING_TAKE_PROFIT = 0.05       # +5%  (~2:1 vs stop)
+MORNING_STOP_LOSS = 0.025        # -2.5%
+MORNING_CANDIDATE_POOL = 80
+MORNING_MAX_SHARE_PRICE = 500.0  # allow 1-share fills on mid/large names
+# Risk ~1% of equity per name at the stop (position ≈ risk / stop_pct).
+MORNING_RISK_PER_TRADE = 0.01
+# Max total risk if every name stopped out (soft portfolio heat).
+MORNING_MAX_PORTFOLIO_HEAT = 0.08
+# Long-only only when SPY close > SMA50 and SMA200.
+MORNING_REQUIRE_SPY_UPTREND = True
+MORNING_SPY_SMA_FAST = 50
+MORNING_SPY_SMA_SLOW = 200
+
 
 # Optional OpenAI-compatible LLM for hybrid_decide (env overrides these defaults)
 # HYBRID_LLM_API_KEY or OPENAI_API_KEY in /etc/stock-ai/stock-ai.env

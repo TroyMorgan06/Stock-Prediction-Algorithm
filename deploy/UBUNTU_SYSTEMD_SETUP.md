@@ -144,6 +144,6 @@ Alpaca returns **401** when the **Key ID + Secret** do not match the **endpoint*
 ### Notes
 - `stock-ai-compute.service` keeps refreshing `out/predictions.json` + `out/trade_plan.csv`
 - `stock-ai-trade.timer` runs **once** Mon–Fri at **09:35** America/New_York via `hybrid_morning.py` (decide → `out/approved_basket.csv` → bracket execute).
-- Defaults: **paper**, **$4000** run budget / **20** names (~$200/slot + 1-share fills up to $350), **±1.5%** brackets. See [PAPER_RESET_CHECKLIST.md](PAPER_RESET_CHECKLIST.md) and [CURSOR_SSH.md](CURSOR_SSH.md).
+- Defaults: **Swing Growth** paper — up to **8** names, **TP +5% / SL −2.5%**, SPY uptrend filter. See [STRATEGY.md](STRATEGY.md), [PAPER_RESET_CHECKLIST.md](PAPER_RESET_CHECKLIST.md), [CURSOR_SSH.md](CURSOR_SSH.md).
 - When ready for live, remove `--paper` in `stock-ai-trade.service` and use live API keys.
 

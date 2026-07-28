@@ -1,15 +1,15 @@
 """
 Morning oneshot: hybrid_decide → approved_basket.csv → alpaca_executor.
 
-Used by stock-ai-trade.service (once at open).
-
-  python hybrid_morning.py --paper --daily-budget 2000 --max-buys 12 \\
-      --take-profit 0.015 --stop-loss 0.015 --dry-run
+Swing Growth defaults (deploy/STRATEGY.md):
+  python hybrid_morning.py --paper --daily-budget 7000 --max-buys 8 \\
+      --take-profit 0.05 --stop-loss 0.025 --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import subprocess
 import sys
@@ -27,8 +27,19 @@ from config import (
 )
 
 
+def _basket_has_rows(path: str) -> bool:
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        return any((r.get("ticker") or "").strip() for r in rows)
+    except Exception:
+        return False
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Hybrid morning: decide basket then execute brackets.")
+    p = argparse.ArgumentParser(description="Hybrid morning: Swing Growth decide + execute.")
     p.add_argument("--plan-csv", default=os.path.join(OUTPUT_DIR, TRADE_PLAN_CSV))
     p.add_argument("--basket-csv", default=os.path.join(OUTPUT_DIR, APPROVED_BASKET_CSV))
     p.add_argument("--paper", action="store_true")
@@ -38,17 +49,8 @@ def main() -> None:
     p.add_argument("--max-share-price", type=float, default=MORNING_MAX_SHARE_PRICE)
     p.add_argument("--take-profit", type=float, default=MORNING_TAKE_PROFIT)
     p.add_argument("--stop-loss", type=float, default=MORNING_STOP_LOSS)
-    p.add_argument(
-        "--clear-stale-orders",
-        action="store_true",
-        default=True,
-        help="Pass through to alpaca_executor (default on).",
-    )
-    p.add_argument(
-        "--no-clear-stale-orders",
-        action="store_false",
-        dest="clear_stale_orders",
-    )
+    p.add_argument("--clear-stale-orders", action="store_true", default=True)
+    p.add_argument("--no-clear-stale-orders", action="store_false", dest="clear_stale_orders")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--decide-only", action="store_true", help="Write basket; skip executor.")
     args = p.parse_args()
@@ -71,19 +73,25 @@ def main() -> None:
         str(args.candidate_pool),
         "--max-share-price",
         str(args.max_share_price),
+        "--stop-loss",
+        str(args.stop_loss),
     ]
     if args.paper:
         decide_cmd.append("--paper")
     if args.dry_run:
         decide_cmd.append("--dry-run")
 
-    print("hybrid_morning: running decide…", flush=True)
+    print("hybrid_morning: running Swing Growth decide…", flush=True)
     r1 = subprocess.run(decide_cmd, cwd=root)
     if r1.returncode != 0:
         raise SystemExit(r1.returncode)
 
     if args.decide_only:
         print("hybrid_morning: decide-only; skipping execute.", flush=True)
+        return
+
+    if not _basket_has_rows(args.basket_csv):
+        print("hybrid_morning: empty basket (regime off or no names) — skip execute.", flush=True)
         return
 
     exec_cmd = [

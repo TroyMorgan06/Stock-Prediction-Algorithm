@@ -41,7 +41,7 @@ cd /opt/stock_ai && git pull && bash deploy/update_and_deploy.sh --live-run
 ssh YOUR_USER@LINUX_HOST 'cd /opt/stock_ai && sudo bash -c "
 set -a && source /etc/stock-ai/stock-ai.env && set +a &&
 /opt/stock_ai/.venv/bin/python hybrid_morning.py --paper \
-  --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --dry-run
+  --daily-budget 7000 --max-buys 8 --take-profit 0.05 --stop-loss 0.025 --dry-run
 "'
 ```
 
@@ -63,7 +63,7 @@ Or run the script directly (same flags as the unit):
 ssh YOUR_USER@LINUX_HOST 'cd /opt/stock_ai && sudo bash -c "
 set -a && source /etc/stock-ai/stock-ai.env && set +a &&
 /opt/stock_ai/.venv/bin/python hybrid_morning.py --paper \
-  --daily-budget 4000 --max-buys 20 --take-profit 0.015 --stop-loss 0.015 --clear-stale-orders
+  --daily-budget 7000 --max-buys 8 --take-profit 0.05 --stop-loss 0.025 --clear-stale-orders
 "'
 ```
 

@@ -27,6 +27,7 @@ from alpaca_executor import (
     _cash_available,
     _entry_limit_price,
     _exit_on_alpaca_auth_failure,
+    _f,
     _fetch_market_quotes,
     _notional_to_qty,
     iter_long_candidates,
@@ -103,14 +104,26 @@ def build_affordable(
     blocked: Set[str],
     max_buys: int,
     max_share_price: float,
-) -> List[AffordableName]:
+) -> tuple[List[AffordableName], Dict[str, int]]:
     """
     Pass 1: equal slot sizing (qty = floor(slot/price)).
     Pass 2: fill leftover slots with 1-share buys up to max_share_price.
+
+    Returns (candidates, skip_counts) for diagnostics.
     """
     out: List[AffordableName] = []
     used: Set[str] = set()
     cash_left = float(cash_cap)
+    skips = {
+        "blocked": 0,
+        "no_price": 0,
+        "too_expensive": 0,
+        "qty0": 0,
+        "over_cash": 0,
+    }
+
+    def price_for(r: PlanRow) -> Optional[float]:
+        return _entry_limit_price(quotes.get(r.ticker.upper(), QuoteSnap()), fallback=r.prior_close)
 
     def try_add(r: PlanRow, budget: float) -> bool:
         nonlocal cash_left
@@ -118,15 +131,19 @@ def build_affordable(
             return False
         sym = r.ticker.upper()
         if sym in blocked or sym in used:
+            skips["blocked"] += 1
             return False
-        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+        entry = price_for(r)
         if entry is None or entry <= 0:
+            skips["no_price"] += 1
             return False
         qty = _notional_to_qty(budget_dollars=budget, price=float(entry))
         if qty <= 0:
+            skips["qty0"] += 1
             return False
         est = qty * float(entry)
         if est > cash_left:
+            skips["over_cash"] += 1
             return False
         out.append(
             AffordableName(
@@ -149,7 +166,7 @@ def build_affordable(
             break
         try_add(r, float(slot_budget))
 
-    # Pass 2 — 1-share fillers for names priced between slot and max_share_price
+    # Pass 2 — 1-share fillers up to max_share_price (uses prior_close when quotes empty)
     if len(out) < max_buys:
         for r in plan_rows:
             if len(out) >= max_buys:
@@ -157,17 +174,19 @@ def build_affordable(
             sym = r.ticker.upper()
             if sym in blocked or sym in used:
                 continue
-            entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+            entry = price_for(r)
             if entry is None or entry <= 0:
+                skips["no_price"] += 1
                 continue
             if float(entry) > float(max_share_price):
+                skips["too_expensive"] += 1
                 continue
             if float(entry) > cash_left:
+                skips["over_cash"] += 1
                 continue
-            # Budget exactly one share at limit price
             try_add(r, float(entry))
 
-    return out
+    return out, skips
 
 
 def rule_based_pick(affordable: List[AffordableName], max_buys: int) -> List[AffordableName]:
@@ -287,9 +306,14 @@ def decide(
         raise
 
     cash = _cash_available(acct)
+    raw_cash = float(_f(getattr(acct, "cash", None)) or 0.0)
+    raw_bp = float(_f(getattr(acct, "buying_power", None)) or 0.0)
     run_budget = min(float(daily_budget), float(cash))
     if run_budget <= 0 or max_buys <= 0:
-        raise SystemExit(f"Insufficient cash or max_buys. cash≈${cash:.2f}")
+        raise SystemExit(
+            f"Insufficient cash/buying_power or max_buys. "
+            f"usable≈${cash:.2f} cash≈${raw_cash:.2f} buying_power≈${raw_bp:.2f}"
+        )
 
     slot = run_budget / float(max_buys)
     positions = {p.symbol.upper() for p in trading.get_all_positions()}
@@ -298,13 +322,21 @@ def decide(
     blocked = positions | open_syms
 
     print(
-        f"hybrid_decide: cash≈${cash:.2f} run_budget=${run_budget:.2f} "
-        f"slot≈${slot:.2f} max_buys={max_buys} max_share=${max_share_price:.0f} "
-        f"plan_longs={len(longs)} blocked={len(blocked)} llm={'yes' if _llm_api_key() else 'no'}"
+        f"hybrid_decide: usable≈${cash:.2f} (cash≈${raw_cash:.2f} bp≈${raw_bp:.2f}) "
+        f"run_budget=${run_budget:.2f} slot≈${slot:.2f} max_buys={max_buys} "
+        f"max_share=${max_share_price:.0f} plan_longs={len(longs)} blocked={len(blocked)} "
+        f"llm={'yes' if _llm_api_key() else 'no'}"
     )
 
     quotes = _fetch_market_quotes(key, secret, [r.ticker for r in longs])
-    affordable = build_affordable(
+    quoted = sum(
+        1
+        for r in longs
+        if _entry_limit_price(quotes.get(r.ticker.upper(), QuoteSnap()), fallback=None) is not None
+    )
+    print(f"hybrid_decide: live quotes for {quoted}/{len(longs)} symbols (rest use prior_close if present).")
+
+    affordable, skips = build_affordable(
         plan_rows=longs,
         quotes=quotes,
         slot_budget=slot,
@@ -313,10 +345,23 @@ def decide(
         max_buys=max(max_buys * 3, max_buys),  # over-fetch for LLM to choose from
         max_share_price=float(max_share_price),
     )
-    print(f"hybrid_decide: {len(affordable)} affordable whole-share candidates after filters.")
+    print(
+        f"hybrid_decide: {len(affordable)} affordable whole-share candidates "
+        f"(skips: {skips})."
+    )
     if not affordable:
+        # Show first few plan rows with resolved prices for debugging
+        print("Affordability detail (first 12 LONGs):")
+        for r in longs[:12]:
+            px = _entry_limit_price(quotes.get(r.ticker.upper(), QuoteSnap()), fallback=r.prior_close)
+            q = quotes.get(r.ticker.upper(), QuoteSnap())
+            print(
+                f"  {r.ticker}: price={px} ask={q.ask} last={q.last} prior={r.prior_close} "
+                f"slot={slot:.2f} blocked={r.ticker.upper() in blocked}"
+            )
         raise SystemExit(
-            "Zero affordable names (raise --daily-budget / MORNING_MAX_SHARE_PRICE, or refresh trade plan)."
+            "Zero affordable names. Check usable cash/buying_power, max_share_price, "
+            "and that trade_plan prior_close is populated."
         )
 
     llm_order = llm_pick(

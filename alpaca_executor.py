@@ -130,16 +130,23 @@ def resolve_plan_csv(explicit: Optional[str] = None) -> str:
 
 def _cash_available(account) -> float:
     """
-    Alpaca account fields vary by account type.
-    Prefer cash-like values; fall back to buying_power.
+    Dollars available to deploy.
+
+    Prefer buying_power when cash is ~0/negative (common on paper accounts that
+    already hold positions). Cash-only gating caused hybrid_decide to see $0 budget.
     """
+    cash_vals: List[float] = []
     for attr in ("cash", "cash_withdrawable", "cash_available_for_trading"):
-        v = getattr(account, attr, None)
-        fv = _f(v)
+        fv = _f(getattr(account, attr, None))
         if fv is not None:
-            return fv
-    bp = _f(getattr(account, "buying_power", None))
-    return float(bp or 0.0)
+            cash_vals.append(float(fv))
+    cash = max(cash_vals) if cash_vals else 0.0
+    bp = float(_f(getattr(account, "buying_power", None)) or 0.0)
+    day_bp = float(_f(getattr(account, "daytrading_buying_power", None)) or 0.0)
+    non_marg = float(_f(getattr(account, "non_marginable_buying_power", None)) or 0.0)
+    usable = max(cash, bp, day_bp, non_marg)
+    return float(usable) if usable > 0 else float(cash)
+
 
 
 def _round_price(x: float) -> float:
@@ -158,15 +165,27 @@ def _round_price_down(x: float) -> float:
 ALPACA_BRACKET_MIN_OFFSET = 0.01
 
 
-def _entry_limit_price(snap: QuoteSnap) -> Optional[float]:
-    """Buy limit at ask (rounded up) so bracket base_price matches our entry limit."""
-    if snap.ask and snap.ask > 0:
-        return _round_price_up(snap.ask)
-    if snap.last and snap.last > 0:
-        return _round_price_up(snap.last)
-    if snap.bid and snap.bid > 0:
-        return _round_price_up(snap.bid)
+def _entry_limit_price(snap: QuoteSnap, fallback: Optional[float] = None) -> Optional[float]:
+    """
+    Buy limit basis: ask → last → bid → optional fallback (e.g. plan prior_close).
+
+    After hours, Alpaca often returns ask=0 / empty quotes; treat those as missing.
+    """
+    for raw in (snap.ask, snap.last, snap.bid, fallback):
+        if raw is None:
+            continue
+        try:
+            px = float(raw)
+        except Exception:
+            continue
+        if px > 0:
+            return _round_price_up(px)
     return None
+
+
+def _alpaca_symbol(symbol: str) -> str:
+    """Yahoo BRK-B → Alpaca BRK.B."""
+    return symbol.strip().upper().replace("-", ".")
 
 
 def _notional_to_qty(*, budget_dollars: float, price: float) -> int:
@@ -220,36 +239,49 @@ def _fetch_market_quotes(key: str, secret: str, symbols: List[str]) -> Dict[str,
         return {}
 
     client = StockHistoricalDataClient(key, secret)
-    uniq = sorted({s.upper() for s in symbols if s})
-    out: Dict[str, QuoteSnap] = {sym: QuoteSnap() for sym in uniq}
+    # Keep plan tickers as keys; query Alpaca with BRK.B-style symbols.
+    orig_syms = sorted({s.upper() for s in symbols if s})
+    apca_of = {s: _alpaca_symbol(s) for s in orig_syms}
+    apca_syms = sorted(set(apca_of.values()))
+    out: Dict[str, QuoteSnap] = {sym: QuoteSnap() for sym in orig_syms}
+
+    def _lookup(blob, apca: str, orig: str):
+        if blob is None or not hasattr(blob, "get"):
+            return None
+        return blob.get(apca) or blob.get(orig) or blob.get(apca.replace(".", "-"))
 
     try:
-        quotes = client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=uniq))
+        quotes = client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=apca_syms))
     except Exception:
         quotes = None
 
     if quotes is not None:
-        for sym in uniq:
-            q = quotes.get(sym) if hasattr(quotes, "get") else None
+        for orig in orig_syms:
+            q = _lookup(quotes, apca_of[orig], orig)
             if q is None:
                 continue
-            out[sym] = QuoteSnap(
-                ask=_f(getattr(q, "ask_price", None)),
-                bid=_f(getattr(q, "bid_price", None)),
-                last=out[sym].last,
-            )
+            ask = _f(getattr(q, "ask_price", None))
+            bid = _f(getattr(q, "bid_price", None))
+            # After-hours: ask/bid often 0 — treat as missing.
+            if ask is not None and ask <= 0:
+                ask = None
+            if bid is not None and bid <= 0:
+                bid = None
+            out[orig] = QuoteSnap(ask=ask, bid=bid, last=out[orig].last)
 
     try:
-        trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=uniq))
+        trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=apca_syms))
     except Exception:
         return out
 
     if trades is not None:
-        for sym in uniq:
-            t = trades.get(sym) if hasattr(trades, "get") else None
+        for orig in orig_syms:
+            t = _lookup(trades, apca_of[orig], orig)
             last = _f(getattr(t, "price", None)) if t is not None else None
-            snap = out[sym]
-            out[sym] = QuoteSnap(ask=snap.ask, bid=snap.bid, last=last if last and last > 0 else snap.last)
+            if last is not None and last <= 0:
+                last = None
+            snap = out[orig]
+            out[orig] = QuoteSnap(ask=snap.ask, bid=snap.bid, last=last if last else snap.last)
     return out
 
 
@@ -281,15 +313,20 @@ def _prepare_bracket_candidates(
     skipped_qty = 0
     for r in rows:
         sym = r.ticker.upper()
-        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()), fallback=r.prior_close)
         if entry is None or entry <= 0:
             skipped_qty += 1
             continue
         budget = _slot_budget(r, default_budget)
         qty = _notional_to_qty(budget_dollars=budget, price=float(entry))
         if qty <= 0:
-            skipped_qty += 1
-            continue
+            # Allow 1-share if default budget is short but cash_cap covers one share
+            if float(entry) <= float(cash_cap):
+                qty = 1
+                budget = float(entry)
+            else:
+                skipped_qty += 1
+                continue
         est_cost = qty * float(entry)
         if est_cost > cash_cap:
             skipped_qty += 1
@@ -307,7 +344,7 @@ def _log_affordability_detail(
 ) -> None:
     for r in rows:
         sym = r.ticker.upper()
-        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()))
+        entry = _entry_limit_price(quotes.get(sym, QuoteSnap()), fallback=r.prior_close)
         if entry is None or entry <= 0:
             print(f"  {sym}: no quote")
             continue

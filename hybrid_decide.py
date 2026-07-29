@@ -46,6 +46,7 @@ from config import (
     MORNING_MAX_SHARE_PRICE,
     MORNING_REQUIRE_SPY_UPTREND,
     MORNING_RISK_PER_TRADE,
+    MORNING_SPY_REGIME,
     MORNING_SPY_SMA_FAST,
     MORNING_SPY_SMA_SLOW,
     MORNING_STOP_LOSS,
@@ -91,29 +92,49 @@ def _account_equity(acct) -> float:
     return max(_cash_available(acct), 0.0)
 
 
-def spy_uptrend_ok(
+def spy_regime_ok(
     *,
+    mode: str = MORNING_SPY_REGIME,
     fast: int = MORNING_SPY_SMA_FAST,
     slow: int = MORNING_SPY_SMA_SLOW,
 ) -> Tuple[bool, str]:
-    """Long-only when SPY close > SMA_fast and SMA_slow (and fast > slow)."""
+    """
+    Market gate for new longs.
+
+    - sma200: allow unless SPY is below the long SMA (clear bear) — default
+    - strict: require close > SMA50 and SMA200 and SMA50 >= SMA200
+    - off: always allow
+    """
+    mode = (mode or "sma200").strip().lower()
+    if mode in ("off", "none", "disabled"):
+        return True, "regime filter off"
+
     try:
         from data import _fetch_daily
 
         df = _fetch_daily("SPY", START)
         if df is None or df.empty or "Close" not in df.columns:
-            return False, "SPY data unavailable"
+            # Fail open for paper continuity if data missing; log clearly.
+            return True, "SPY data unavailable — allowing buys"
         close = df["Close"].astype(float)
-        if len(close) < int(slow) + 5:
-            return False, f"SPY history too short ({len(close)} bars)"
+        need = max(int(slow), int(fast)) + 5
+        if len(close) < need:
+            return True, f"SPY history short ({len(close)}) — allowing buys"
         sma_f = float(close.rolling(int(fast)).mean().iloc[-1])
         sma_s = float(close.rolling(int(slow)).mean().iloc[-1])
         last = float(close.iloc[-1])
-        ok = last > sma_f and last > sma_s and sma_f >= sma_s
         detail = f"SPY={last:.2f} SMA{fast}={sma_f:.2f} SMA{slow}={sma_s:.2f}"
-        return ok, detail
+
+        if mode == "strict":
+            ok = last > sma_f and last > sma_s and sma_f >= sma_s
+            return ok, detail
+
+        # Default / sma200: only block clear bears
+        ok = last > sma_s
+        return ok, detail + (" (allow: above SMA200)" if ok else " (block: below SMA200)")
     except Exception as exc:
-        return False, f"SPY regime check failed: {exc}"
+        return True, f"SPY regime check failed ({exc}) — allowing buys"
+
 
 
 def write_approved_basket(path: str, rows: List[dict]) -> None:
@@ -309,6 +330,7 @@ def decide(
     risk_per_trade: float = MORNING_RISK_PER_TRADE,
     deploy_fraction: float = MORNING_DEPLOY_FRACTION,
     require_spy_uptrend: bool = MORNING_REQUIRE_SPY_UPTREND,
+    spy_regime: str = MORNING_SPY_REGIME,
     dry_run: bool = False,
 ) -> List[dict]:
     key = (os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY") or "").strip()
@@ -317,12 +339,14 @@ def decide(
         raise SystemExit("Missing Alpaca credentials (APCA_API_KEY_ID / APCA_API_SECRET_KEY).")
 
     if require_spy_uptrend:
-        ok, detail = spy_uptrend_ok()
+        ok, detail = spy_regime_ok(mode=spy_regime)
         print(f"hybrid_decide: SPY regime → {'ON' if ok else 'OFF'} ({detail})")
         if not ok:
             write_approved_basket(basket_csv, [])
-            print(f"Wrote empty {basket_csv} (no new buys in down/sideways market).")
+            print(f"Wrote empty {basket_csv} (no new buys — clear bear / filter blocked).")
             return []
+    else:
+        print("hybrid_decide: SPY regime filter disabled")
 
     rows = load_plan_rows(plan_csv)
     longs = iter_long_candidates(rows, candidate_pool)
@@ -479,6 +503,12 @@ def main() -> None:
     p.add_argument("--risk-per-trade", type=float, default=MORNING_RISK_PER_TRADE)
     p.add_argument("--deploy-fraction", type=float, default=MORNING_DEPLOY_FRACTION)
     p.add_argument(
+        "--spy-regime",
+        default=MORNING_SPY_REGIME,
+        choices=("sma200", "strict", "off"),
+        help="sma200=block only below long SMA; strict=SMA50+200; off=always trade",
+    )
+    p.add_argument(
         "--require-spy-uptrend",
         action="store_true",
         default=MORNING_REQUIRE_SPY_UPTREND,
@@ -503,6 +533,7 @@ def main() -> None:
         risk_per_trade=float(args.risk_per_trade),
         deploy_fraction=float(args.deploy_fraction),
         require_spy_uptrend=bool(args.require_spy_uptrend),
+        spy_regime=str(args.spy_regime),
         dry_run=bool(args.dry_run),
     )
 

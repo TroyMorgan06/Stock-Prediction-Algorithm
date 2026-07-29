@@ -26,7 +26,7 @@ It is **not** gambling on tiny same-day moves. The old ±1.5% brackets were like
 
 ## Rules (what the code does)
 
-1. **Market filter:** trade only if SPY is above its 50-day and 200-day averages (uptrend). Otherwise: **no new buys**.
+1. **Market filter:** skip new buys only in a **clear bear** (SPY below its 200-day average). Short pullbacks are OK. (Old “strict” mode required SPY above both 50- and 200-day averages and sat out too often.)
 2. **Fewer stocks:** up to **8** names (quality over quantity).
 3. **Risk sizing:** each name sized so a stop-loss loses about **~1% of account** (capped by budget).
 4. **Exits:** stop about **2.5%** below entry; take profit about **5%** above (**~2:1** reward:risk).

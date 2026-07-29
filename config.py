@@ -60,8 +60,10 @@ MORNING_MAX_SHARE_PRICE = 500.0  # allow 1-share fills on mid/large names
 MORNING_RISK_PER_TRADE = 0.01
 # Max total risk if every name stopped out (soft portfolio heat).
 MORNING_MAX_PORTFOLIO_HEAT = 0.08
-# Long-only only when SPY close > SMA50 and SMA200.
-MORNING_REQUIRE_SPY_UPTREND = True
+# Long-only unless SPY is in a clear bear (below long SMA).
+# Mode: "off" | "sma200" (recommended) | "strict" (SMA50+SMA200 — often sits out for weeks)
+MORNING_SPY_REGIME = "sma200"
+MORNING_REQUIRE_SPY_UPTREND = True  # False = always allow buys (ignore SPY filter)
 MORNING_SPY_SMA_FAST = 50
 MORNING_SPY_SMA_SLOW = 200
 

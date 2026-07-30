@@ -31,15 +31,13 @@ FINNHUB_API_KEY=your_key_here
 
 (`reddit_ingest.py` uses StockTwits now and needs no credentials.)
 
-### Universe (S&P 500 / larger sets)
+### Universe (S&P 500)
 
-- Edit `config.py`:
-  - `UNIVERSE_FILE` points to a newline-separated list (default `universes/sp500.txt`).
-  - `MAX_TICKERS` caps how many tickers you run each cycle.
+- `UNIVERSE_FILE` defaults to `universes/sp500.txt` (**full S&P 500**, ~503 Yahoo-style tickers).
+- `MAX_TICKERS` caps how many tickers run each cycle (default **503**).
+- If Yahoo/StockTwits throttle you, temporarily point `UNIVERSE_FILE` at `universes/sp500_starter.txt` (~30 names) or lower `MAX_TICKERS`.
 
-**Important**: do NOT start with “S&P 500 + all Nasdaq” on day 1.
-Yahoo/StockTwits will throttle you and your box will spend all day downloading.
-Start with **50–200** liquid names, then expand once stable.
+**Note:** A full-universe `compute_worker --once` can take a long time on first run (hundreds of downloads). Ingest timers will also hit more symbols—watch rate limits.
 
 ### Start services (dashboard + compute worker)
 

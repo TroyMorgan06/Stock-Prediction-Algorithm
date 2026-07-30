@@ -1,0 +1,32 @@
+# Optional smaller universe for debugging / rate-limit recovery.
+# Point UNIVERSE_FILE at this file in config.py if the full S&P 500 is too heavy.
+AAPL
+MSFT
+GOOGL
+AMZN
+NVDA
+META
+TSLA
+BRK-B
+JPM
+V
+UNH
+JNJ
+WMT
+PG
+MA
+HD
+DIS
+BAC
+XOM
+CVX
+ABBV
+PFE
+KO
+PEP
+COST
+AVGO
+LLY
+MRK
+TMO
+MCD

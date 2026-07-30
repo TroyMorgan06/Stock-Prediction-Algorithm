@@ -11,10 +11,10 @@ TICKERS = [
 TICKER = TICKERS[0]
 
 # Universe selection (Ubuntu Server deployment)
-# - Put a newline-separated list of tickers in `universes/sp500.txt` or your own file.
-# - Keep it smaller at first (e.g. 50–200) to avoid Yahoo/StockTwits rate limits.
+# - `universes/sp500.txt` = full S&P 500 (Yahoo-style tickers).
+# - Raise/lower MAX_TICKERS to cap how many run per compute cycle (rate limits).
 UNIVERSE_FILE = "universes/sp500.txt"  # set to None to use `TICKERS` below
-MAX_TICKERS = 200                      # hard cap per run for stability
+MAX_TICKERS = 503                      # full S&P 500 (~500–503 names)
 
 # Override for faster iteration: set to a subset list or leave None.
 TICKERS_RUN = None  # e.g. ["AAPL","MSFT","GOOGL"]

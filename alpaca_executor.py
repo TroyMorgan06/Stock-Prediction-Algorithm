@@ -632,7 +632,9 @@ def main() -> None:
             qty=float(qty),
             limit_price=float(entry),
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY,
+            # GTC so take-profit / stop-loss can live across days (Swing Growth).
+            # DAY expired exits at the close even if you still hold the shares.
+            time_in_force=TimeInForce.GTC,
             order_class=OrderClass.BRACKET,
             take_profit=TakeProfitRequest(limit_price=tp),
             stop_loss=StopLossRequest(stop_price=sl),

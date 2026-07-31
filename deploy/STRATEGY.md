@@ -29,9 +29,20 @@ It is **not** gambling on tiny same-day moves. The old ±1.5% brackets were like
 1. **Market filter:** skip new buys only in a **clear bear** (SPY below its 200-day average). Short pullbacks are OK. (Old “strict” mode required SPY above both 50- and 200-day averages and sat out too often.)
 2. **Fewer stocks:** up to **8** names (quality over quantity).
 3. **Risk sizing:** each name sized so a stop-loss loses about **~1% of account** (capped by budget).
-4. **Exits:** stop about **2.5%** below entry; take profit about **5%** above (**~2:1** reward:risk).
+4. **Exits:** stop about **2.5%** below entry; take profit about **5%** above (**~2:1** reward:risk). These are attached as a **bracket** (limit sell + stop sell) with **GTC** so they stay active overnight until one fills.
 5. **Once per weekday** near the open—no all-day overtrading.
 6. **Whole shares only** (Alpaca bracket limit)—expensive mega-caps may still be skipped.
+
+### How selling works (Alpaca UI)
+
+When the bot buys, Alpaca creates **one bracket** with three parts:
+
+1. **Buy** (entry)  
+2. **Take-profit sell** (limit) — sell if price rises enough  
+3. **Stop-loss sell** (stop) — sell if price falls enough  
+
+Only **one** of the two sells should fill; the other cancels.  
+If you used older **DAY** brackets, unfilled exits **expired at the regular-session close** (often shows as ~3:00 PM Central / 4:00 PM Eastern) even while you still held the stock — that left positions **unprotected overnight**. New orders use **GTC** exits.
 
 ## Why this is better than the old bot
 
